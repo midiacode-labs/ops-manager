@@ -5,6 +5,8 @@ from datetime import datetime
 import time
 import json
 import os
+import boto3
+from dotenv import load_dotenv
 
 # Configuração da página (deve ser a primeira chamada do Streamlit)
 st.set_page_config(
@@ -142,6 +144,30 @@ def save_status_history(system_name, status, timestamp):
     with open(history_file, "w") as f:
         json.dump(history, f)
 
+load_dotenv()
+
+# Funções para ligar/desligar ambiente de dev
+
+def start_dev_environment():
+    lambda_client = boto3.client('lambda', region_name='us-east-1')
+    response = lambda_client.invoke(
+        FunctionName='arn:aws:lambda:us-east-1:578416043364:function:aws-operations-tools-prod-lambda_handler_start_dev_environment',
+        InvocationType='RequestResponse'
+    )
+    status_code = response['StatusCode']
+    payload = response['Payload'].read().decode() if 'Payload' in response else ''
+    return status_code, payload
+
+def stop_dev_environment():
+    lambda_client = boto3.client('lambda', region_name='us-east-1')
+    response = lambda_client.invoke(
+        FunctionName='arn:aws:lambda:us-east-1:578416043364:function:aws-operations-tools-prod-lambda_handler_stop_dev_environment',
+        InvocationType='RequestResponse'
+    )
+    status_code = response['StatusCode']
+    payload = response['Payload'].read().decode() if 'Payload' in response else ''
+    return status_code, payload
+
 # Conteúdo principal baseado na opção selecionada
 if option == "Dashboard":
     if 'system_status' not in st.session_state:
@@ -160,19 +186,51 @@ if option == "Dashboard":
     current_time_dt = datetime.now()
     formatted_current_time = current_time_dt.strftime("%d/%m/%Y %H:%M:%S")
 
-    col1, col2 = st.columns([1, 5])
-    with col1:
-        refresh_clicked = st.button(
-            label="\U0001F504 Atualizar Status",  # Unicode refresh icon
-            key="refresh_btn",
-            help="Atualizar status dos sistemas"
-        )
-        if refresh_clicked:
-            st.session_state.last_refresh_time = formatted_current_time
-            for nome in sistemas.keys():
-                if nome in st.session_state.system_status:
-                    st.session_state.system_status[nome]['force_refresh'] = True
-            st.rerun()
+    # Verifica se todos os sistemas estão operacionais
+    all_systems_operational = all(
+        check_system_status(url)[0] for url in sistemas.values()
+    )
+
+    ligado = st.toggle(
+        "Ligado",
+        value=all_systems_operational,
+        key="toggle_env_btn",
+        help="Ligar ou desligar ambiente de desenvolvimento"
+    )
+
+    if 'last_toggle_state' not in st.session_state:
+        st.session_state.last_toggle_state = all_systems_operational
+
+    if ligado != st.session_state.last_toggle_state:
+        if ligado:
+            with st.spinner("Ligando ambiente de desenvolvimento..."):
+                status_code, payload = start_dev_environment()
+                if status_code == 200:
+                    st.success("A solicitação de ligamento do ambiente de desenvolvimento foi recebida com sucesso! Aguarde alguns minutos para ficar totalmente disponível.")
+                else:
+                    st.error(f"Erro ao ligar ambiente: {payload}")
+        else:
+            with st.spinner("Desligando ambiente de desenvolvimento..."):
+                status_code, payload = stop_dev_environment()
+                if status_code == 200:
+                    st.success("A solicitação de desligamento do ambiente de desenvolvimento foi recebida com sucesso! Aguarde alguns minutos para o ambiente ser totalmente desligado.")
+                else:
+                    st.error(f"Erro ao desligar ambiente: {payload}")
+        st.session_state.last_toggle_state = ligado
+
+    refresh_clicked = st.button(
+        label="\U0001F504 Atualizar Status",  # Unicode refresh icon
+        key="refresh_btn",
+        help="Atualizar status dos sistemas",   
+        type="primary",  
+    )
+
+    if refresh_clicked:
+        st.session_state.last_refresh_time = formatted_current_time
+        for nome in sistemas.keys():
+            if nome in st.session_state.system_status:
+                st.session_state.system_status[nome]['force_refresh'] = True
+        st.rerun()
 
     st.markdown("""
     <div style="margin-bottom: 16px; display: flex; align-items: center; gap: 20px;">
