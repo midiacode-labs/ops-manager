@@ -15,7 +15,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"
 )
-
+st.logo("icone_midiacode.png", link="https://midiacode.com/")
 # Estilos CSS para elementos específicos (mais minimalista)
 st.markdown("""
 <style>
