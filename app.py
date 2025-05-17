@@ -122,27 +122,6 @@ def check_system_status(url):
     except RequestException:
         return False, None
 
-# Função para salvar o histórico de status
-def save_status_history(system_name, status, timestamp):
-    history_file = "system_status_history.json"
-    if os.path.exists(history_file):
-        with open(history_file, "r") as f:
-            try:
-                history = json.load(f)
-            except json.JSONDecodeError:
-                history = {}
-    else:
-        history = {}
-    if system_name not in history:
-        history[system_name] = []
-    if len(history[system_name]) >= 100:
-        history[system_name].pop(0)
-    history[system_name].append({
-        "timestamp": timestamp,
-        "status": status
-    })
-    with open(history_file, "w") as f:
-        json.dump(history, f)
 
 load_dotenv()
 
@@ -255,7 +234,6 @@ if option == "Dashboard":
                 "response_time": response_time,
                 "force_refresh": False
             }
-            save_status_history(nome, status, formatted_current_time)
         current_status_info = st.session_state.system_status[nome]
         status = current_status_info["status"]
         response_time = current_status_info["response_time"]
@@ -287,23 +265,6 @@ if option == "Dashboard":
                 st.markdown(f"**URL do Serviço:** [{url_sistema}]({url_sistema})")
                 st.markdown(f"**Última Verificação:** {system_info['last_check']}")
                 st.markdown(f"**Tempo de Resposta:** {system_info['response_time'] or 'N/A'} ms")
-                history_file = "system_status_history.json"
-                if os.path.exists(history_file):
-                    with open(history_file, "r") as f:
-                        try:
-                            full_history = json.load(f)
-                            system_history = full_history.get(selected_system_name, [])
-                            if system_history:
-                                st.markdown("**Histórico Recente:**")
-                                for entry in reversed(system_history[-5:]):
-                                    history_status_text = "Operacional" if entry['status'] else "Indisponível"
-                                    st.caption(f"- {entry['timestamp']}: {history_status_text}")
-                            else:
-                                st.caption("Nenhum histórico disponível para este serviço.")
-                        except json.JSONDecodeError:
-                            st.caption("Erro ao carregar o histórico.")
-                else:
-                    st.caption("Arquivo de histórico não encontrado.")
                 st.markdown("""
                 <div style=\"margin-top:20px;padding-top:16px;border-top:1px solid #dadce0;color:#5f6368;font-size:13px;\">
                     Caso encontre problemas, entre em contato com a equipe de operações em 
