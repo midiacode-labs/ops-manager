@@ -53,3 +53,9 @@ Para atualizar as dependências:
 ```bash
 poetry update
 ```
+
+Para atualizar o arquivo `requirements.txt` com as dependências principais, execute:
+
+```bash
+poetry export -f requirements.txt --without-hashes --output requirements.txt --only main
+```
