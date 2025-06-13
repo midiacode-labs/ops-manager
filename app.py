@@ -96,7 +96,7 @@ with st.sidebar:
     # st.write("Usuário: Admin")
     if 'last_check_time' not in st.session_state:
         st.session_state.last_check_time = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    st.write(f"Última verificação: {st.session_state.last_check_time}")
+    # st.write(f"Última verificação: {st.session_state.last_check_time}")
 
 # Função para verificar o status de um sistema
 def check_system_status(url):
@@ -145,7 +145,8 @@ if option == "Dashboard":
     sistemas = {
         "Content Spot API": "https://dev.contentspot.midiacode.pt/health",
         "Account API": "https://dev.account.midiacode.pt/ht/",
-        "Content Core API": "https://dev.contentcore.midiacode.pt/admin/login/"
+        "Content Core API": "https://dev.contentcore.midiacode.pt/hc/",
+        "Midiacode Studio": "https://dev.studio.midiacode.pt/"
     }
 
     current_time_dt = datetime.now()
