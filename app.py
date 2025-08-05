@@ -146,7 +146,8 @@ if option == "Dashboard":
         "Content Spot API": "https://dev.contentspot.midiacode.pt/health",
         "Account API": "https://dev.account.midiacode.pt/ht/",
         "Content Core API": "https://dev.contentcore.midiacode.pt/hc/",
-        "Midiacode Studio": "https://dev.studio.midiacode.pt/"
+        "Midiacode Studio": "https://dev.studio.midiacode.pt/",
+        "Point System Mini-App": "https://dev.point-system.midiacode.pt/",
     }
 
     current_time_dt = datetime.now()

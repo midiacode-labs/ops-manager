@@ -24,10 +24,11 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "ops-manager"
-version = "0.1.0"
+version = "0.1.1"
 description = "Streamlit application for operations management"
 authors = ["Luiz Gustavo Gavinho <lgavinho@midiacode.com>"]
 readme = "README.md"
+package-mode = false
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.12"
