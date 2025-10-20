@@ -35,9 +35,22 @@ poetry run streamlit run app.py
 
 O aplicativo ficará disponível em `http://localhost:8501`.
 
+## Scripts CLI
+
+### Parar Ambiente de Desenvolvimento
+
+Para parar o ambiente de desenvolvimento via linha de comando:
+
+```bash
+python3 stop_dev_environment.py
+```
+
+Este script invoca uma função Lambda da AWS para parar o ambiente de desenvolvimento e fornece feedback sobre o status da operação.
+
 ## Estrutura do Projeto
 
 - `app.py` - O arquivo principal da aplicação Streamlit
+- `stop_dev_environment.py` - Script CLI para parar o ambiente de desenvolvimento
 - `pyproject.toml` - Configurações do Poetry e dependências do projeto
 
 ## Desenvolvimento
