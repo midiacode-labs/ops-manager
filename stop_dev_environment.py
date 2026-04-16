@@ -6,7 +6,10 @@ CLI script to stop the development environment via AWS Lambda.
 import boto3
 import sys
 import json
+import os
 from dotenv import load_dotenv
+
+from slack_notifications import send_slack_deploy_notification
 
 # Load environment variables
 load_dotenv()
@@ -41,6 +44,13 @@ def main():
 
     status_code, payload = stop_dev_environment()
 
+    slack_sent, slack_error = send_slack_deploy_notification(
+        action="parado",
+        source="cli",
+        status_code=status_code,
+        payload=payload,
+    )
+
     if status_code == 200:
         print("✅ Development environment stop request sent successfully!")
         if payload:
@@ -50,11 +60,15 @@ def main():
                 print("Response:", json.dumps(payload_data, indent=2))
             except json.JSONDecodeError:
                 print("Response:", payload)
+        if not slack_sent and os.getenv("SLACK_DEPLOY_WEBHOOK_URL"):
+            print(f"Warning: failed to send Slack notification: {slack_error}", file=sys.stderr)
         print("Please wait a few minutes for the environment to be fully stopped.")
     else:
         print(f"❌ Failed to stop development environment. Status code: {status_code}")
         if payload:
             print("Error details:", payload)
+        if not slack_sent and os.getenv("SLACK_DEPLOY_WEBHOOK_URL"):
+            print(f"Warning: failed to send Slack notification: {slack_error}", file=sys.stderr)
         sys.exit(1)
 
 

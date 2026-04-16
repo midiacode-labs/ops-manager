@@ -3,10 +3,11 @@ import requests
 from requests.exceptions import RequestException
 from datetime import datetime
 import time
-import json
 import os
 import boto3
 from dotenv import load_dotenv
+
+from slack_notifications import send_slack_deploy_notification
 
 # Configuração da página (deve ser a primeira chamada do Streamlit)
 st.set_page_config(
@@ -177,6 +178,15 @@ if option == "Dashboard":
                     st.success("A solicitação de ligamento do ambiente de desenvolvimento foi recebida com sucesso! Aguarde alguns minutos para ficar totalmente disponível.")
                 else:
                     st.error(f"Erro ao ligar ambiente: {payload}")
+
+                slack_sent, slack_error = send_slack_deploy_notification(
+                    action="iniciado",
+                    source="streamlit",
+                    status_code=status_code,
+                    payload=payload,
+                )
+                if not slack_sent and os.getenv("SLACK_DEPLOY_WEBHOOK_URL"):
+                    st.warning(f"Falha ao enviar notificacao para o Slack: {slack_error}")
         else:
             with st.spinner("Desligando ambiente de desenvolvimento..."):
                 status_code, payload = stop_dev_environment()
@@ -184,6 +194,15 @@ if option == "Dashboard":
                     st.success("A solicitação de desligamento do ambiente de desenvolvimento foi recebida com sucesso! Aguarde alguns minutos para o ambiente ser totalmente desligado.")
                 else:
                     st.error(f"Erro ao desligar ambiente: {payload}")
+
+                slack_sent, slack_error = send_slack_deploy_notification(
+                    action="parado",
+                    source="streamlit",
+                    status_code=status_code,
+                    payload=payload,
+                )
+                if not slack_sent and os.getenv("SLACK_DEPLOY_WEBHOOK_URL"):
+                    st.warning(f"Falha ao enviar notificacao para o Slack: {slack_error}")
         st.session_state.last_toggle_state = ligado
 
     refresh_clicked = st.button(
