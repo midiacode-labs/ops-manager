@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -22,6 +23,17 @@ from urllib.parse import quote
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+LOGGER = logging.getLogger("ops_manager.backup_evidence")
+if not LOGGER.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    )
+    LOGGER.addHandler(_handler)
+LOGGER.setLevel(os.getenv("APP_LOG_LEVEL", "INFO").upper())
+LOGGER.propagate = False
 
 
 @dataclass
@@ -66,15 +78,45 @@ class AwsBackupEvidenceCollector:
         return command
 
     def _run_aws_cli(self, command: list[str]) -> subprocess.CompletedProcess[str] | None:
+        sanitized_command = self._sanitize_command(command)
         try:
-            return subprocess.run(command, capture_output=True, text=True, check=False)
+            result = subprocess.run(command, capture_output=True, text=True, check=False)
+            LOGGER.info(
+                "aws_cli.executed command=%s exit_code=%s",
+                sanitized_command,
+                result.returncode,
+            )
+            if result.returncode != 0:
+                LOGGER.warning(
+                    "aws_cli.failed command=%s stderr=%s stdout=%s",
+                    sanitized_command,
+                    self._truncate_log_text(result.stderr),
+                    self._truncate_log_text(result.stdout),
+                )
+            return result
         except FileNotFoundError:
+            LOGGER.error("aws_cli.not_found command=%s", sanitized_command)
             return None
 
     def _run_command(self, command: list[str]) -> subprocess.CompletedProcess[str] | None:
+        sanitized_command = self._sanitize_command(command)
         try:
-            return subprocess.run(command, capture_output=True, text=True, check=False)
+            result = subprocess.run(command, capture_output=True, text=True, check=False)
+            LOGGER.info(
+                "command.executed command=%s exit_code=%s",
+                sanitized_command,
+                result.returncode,
+            )
+            if result.returncode != 0:
+                LOGGER.warning(
+                    "command.failed command=%s stderr=%s stdout=%s",
+                    sanitized_command,
+                    self._truncate_log_text(result.stderr),
+                    self._truncate_log_text(result.stdout),
+                )
+            return result
         except FileNotFoundError:
+            LOGGER.error("command.not_found command=%s", sanitized_command)
             return None
 
     def _sanitize_command(self, command: list[str]) -> str:
@@ -93,6 +135,13 @@ class AwsBackupEvidenceCollector:
                         sanitized[header_index + 1] = "x-amz-security-token: <redacted>"
 
         return " ".join(sanitized)
+
+    @staticmethod
+    def _truncate_log_text(raw: str | None, limit: int = 500) -> str:
+        text = (raw or "").strip()
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit]}..."
 
     def _resolve_sigv4_credentials(self) -> tuple[str, str, str | None] | None:
         access_key = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
@@ -524,6 +573,369 @@ class AwsBackupEvidenceCollector:
         }
 
     @staticmethod
+    def _parse_rds_resource(resource_arn: str) -> tuple[str | None, str | None]:
+        parts = resource_arn.split(":", maxsplit=5)
+        if len(parts) < 6:
+            return None, None
+
+        resource_part = parts[5]
+        if ":" not in resource_part:
+            return None, None
+
+        resource_kind, resource_identifier = resource_part.split(":", maxsplit=1)
+        if not resource_kind or not resource_identifier:
+            return None, None
+
+        return resource_kind, resource_identifier
+
+    def _build_rds_command(self, args: list[str]) -> list[str]:
+        command = [
+            "aws",
+            "rds",
+            *args,
+            "--region",
+            self.region,
+            "--output",
+            "json",
+        ]
+        if self.profile:
+            command.extend(["--profile", self.profile])
+        return command
+
+    def _collect_rds_snapshot_evidence(
+        self,
+        resource_arn: str,
+        expected_resource_kind: str | None = None,
+    ) -> dict[str, Any]:
+        resource_kind, resource_identifier = self._parse_rds_resource(resource_arn)
+        LOGGER.info(
+            "rds.collect.start resource_arn=%s expected_kind=%s parsed_kind=%s identifier=%s",
+            resource_arn,
+            expected_resource_kind,
+            resource_kind,
+            resource_identifier,
+        )
+        if not resource_kind or not resource_identifier:
+            return {
+                "status": "unavailable",
+                "error": {
+                    "type": "invalid_rds_resource_arn",
+                    "message": "Não foi possível extrair o identificador do ARN RDS.",
+                },
+                "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
+            }
+
+        if resource_kind not in {"db", "cluster"}:
+            return {
+                "status": "unavailable",
+                "error": {
+                    "type": "unsupported_rds_resource_kind",
+                    "message": (
+                        "Tipo de recurso RDS não suportado para coleta de snapshots "
+                        f"automatizados: {resource_kind}."
+                    ),
+                },
+                "resource_kind": resource_kind,
+                "resource_identifier": resource_identifier,
+                "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
+            }
+
+        if expected_resource_kind and expected_resource_kind != resource_kind:
+            return {
+                "status": "unavailable",
+                "error": {
+                    "type": "rds_resource_kind_mismatch",
+                    "message": (
+                        "O tipo de recurso informado não corresponde ao ARN RDS configurado."
+                    ),
+                    "expected": expected_resource_kind,
+                    "actual": resource_kind,
+                },
+                "resource_kind": resource_kind,
+                "resource_identifier": resource_identifier,
+                "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
+            }
+
+        if resource_kind == "db":
+            describe_command = self._build_rds_command(
+                [
+                    "describe-db-instances",
+                    "--db-instance-identifier",
+                    resource_identifier,
+                ]
+            )
+            list_snapshots_command = self._build_rds_command(
+                [
+                    "describe-db-snapshots",
+                    "--db-instance-identifier",
+                    resource_identifier,
+                    "--snapshot-type",
+                    "automated",
+                ]
+            )
+        else:
+            describe_command = self._build_rds_command(
+                [
+                    "describe-db-clusters",
+                    "--db-cluster-identifier",
+                    resource_identifier,
+                ]
+            )
+            list_snapshots_command = self._build_rds_command(
+                [
+                    "describe-db-cluster-snapshots",
+                    "--db-cluster-identifier",
+                    resource_identifier,
+                    "--snapshot-type",
+                    "automated",
+                ]
+            )
+
+        LOGGER.info(
+            "rds.collect.commands describe=%s snapshots=%s",
+            self._sanitize_command(describe_command),
+            self._sanitize_command(list_snapshots_command),
+        )
+
+        describe_result = self._run_aws_cli(describe_command)
+        resource_status: dict[str, Any] = {}
+        resource_error: dict[str, Any] | None = None
+
+        if describe_result is None:
+            resource_error = {
+                "type": "aws_cli_not_found",
+                "message": "AWS CLI não encontrada para consulta do recurso RDS.",
+            }
+        elif describe_result.returncode != 0:
+            resource_error = {
+                "type": "describe_rds_resource_error",
+                "message": "Falha ao consultar metadados do recurso RDS.",
+                "stderr": describe_result.stderr.strip(),
+                "stdout": describe_result.stdout.strip(),
+            }
+            LOGGER.warning(
+                "rds.describe.failed identifier=%s kind=%s stderr=%s stdout=%s",
+                resource_identifier,
+                resource_kind,
+                self._truncate_log_text(describe_result.stderr),
+                self._truncate_log_text(describe_result.stdout),
+            )
+        else:
+            try:
+                describe_payload = json.loads(describe_result.stdout or "{}")
+                if resource_kind == "db":
+                    instances = describe_payload.get("DBInstances") or []
+                    instance_payload = (
+                        instances[0] if isinstance(instances, list) and instances else {}
+                    )
+                    resource_status = {
+                        "resource_type": "db_instance",
+                        "db_instance_identifier": instance_payload.get("DBInstanceIdentifier"),
+                        "db_instance_arn": instance_payload.get("DBInstanceArn"),
+                        "engine": instance_payload.get("Engine"),
+                        "engine_version": instance_payload.get("EngineVersion"),
+                        "instance_status": instance_payload.get("DBInstanceStatus"),
+                        "backup_retention_period": instance_payload.get("BackupRetentionPeriod"),
+                        "preferred_backup_window": instance_payload.get("PreferredBackupWindow"),
+                        "latest_restorable_time": instance_payload.get("LatestRestorableTime"),
+                        "storage_encrypted": instance_payload.get("StorageEncrypted"),
+                        "multi_az": instance_payload.get("MultiAZ"),
+                        "deletion_protection": instance_payload.get("DeletionProtection"),
+                    }
+                else:
+                    clusters = describe_payload.get("DBClusters") or []
+                    cluster_payload = (
+                        clusters[0] if isinstance(clusters, list) and clusters else {}
+                    )
+                    resource_status = {
+                        "resource_type": "db_cluster",
+                        "db_cluster_identifier": cluster_payload.get("DBClusterIdentifier"),
+                        "db_cluster_arn": cluster_payload.get("DBClusterArn"),
+                        "engine": cluster_payload.get("Engine"),
+                        "engine_version": cluster_payload.get("EngineVersion"),
+                        "cluster_status": cluster_payload.get("Status"),
+                        "backup_retention_period": cluster_payload.get("BackupRetentionPeriod"),
+                        "preferred_backup_window": cluster_payload.get("PreferredBackupWindow"),
+                        "latest_restorable_time": cluster_payload.get("LatestRestorableTime"),
+                        "storage_encrypted": cluster_payload.get("StorageEncrypted"),
+                        "deletion_protection": cluster_payload.get("DeletionProtection"),
+                    }
+                LOGGER.info(
+                    "rds.describe.success identifier=%s kind=%s engine=%s retention=%s",
+                    resource_identifier,
+                    resource_kind,
+                    resource_status.get("engine"),
+                    resource_status.get("backup_retention_period"),
+                )
+            except json.JSONDecodeError:
+                resource_error = {
+                    "type": "describe_rds_resource_invalid_json",
+                    "message": "Resposta inválida na consulta do recurso RDS.",
+                }
+                LOGGER.warning(
+                    "rds.describe.invalid_json identifier=%s kind=%s stdout=%s",
+                    resource_identifier,
+                    resource_kind,
+                    self._truncate_log_text(describe_result.stdout),
+                )
+
+        snapshots_result = self._run_aws_cli(list_snapshots_command)
+        if snapshots_result is None:
+            return {
+                "status": "partial",
+                "source": "rds_snapshot_api",
+                "resource_kind": resource_kind,
+                "resource_identifier": resource_identifier,
+                "resource_status": resource_status,
+                "resource_error": resource_error,
+                "snapshot_api": {
+                    "error": {
+                        "type": "aws_cli_not_found",
+                        "message": "AWS CLI não encontrada para consulta de snapshots RDS.",
+                    },
+                },
+                "commands": {
+                    "describe_resource": " ".join(describe_command),
+                    "list_snapshots": " ".join(list_snapshots_command),
+                },
+                "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
+            }
+
+        if snapshots_result.returncode != 0:
+            LOGGER.warning(
+                "rds.snapshots.failed identifier=%s kind=%s stderr=%s stdout=%s",
+                resource_identifier,
+                resource_kind,
+                self._truncate_log_text(snapshots_result.stderr),
+                self._truncate_log_text(snapshots_result.stdout),
+            )
+            return {
+                "status": "partial",
+                "source": "rds_snapshot_api",
+                "resource_kind": resource_kind,
+                "resource_identifier": resource_identifier,
+                "resource_status": resource_status,
+                "resource_error": resource_error,
+                "snapshot_api": {
+                    "error": {
+                        "type": "list_rds_snapshots_error",
+                        "message": "Falha ao consultar snapshots automatizados do RDS.",
+                        "stderr": snapshots_result.stderr.strip(),
+                        "stdout": snapshots_result.stdout.strip(),
+                    },
+                },
+                "commands": {
+                    "describe_resource": " ".join(describe_command),
+                    "list_snapshots": " ".join(list_snapshots_command),
+                },
+                "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
+            }
+
+        try:
+            snapshots_payload = json.loads(snapshots_result.stdout or "{}")
+        except json.JSONDecodeError:
+            LOGGER.warning(
+                "rds.snapshots.invalid_json identifier=%s kind=%s stdout=%s",
+                resource_identifier,
+                resource_kind,
+                self._truncate_log_text(snapshots_result.stdout),
+            )
+            return {
+                "status": "partial",
+                "source": "rds_snapshot_api",
+                "resource_kind": resource_kind,
+                "resource_identifier": resource_identifier,
+                "resource_status": resource_status,
+                "resource_error": resource_error,
+                "snapshot_api": {
+                    "error": {
+                        "type": "list_rds_snapshots_invalid_json",
+                        "message": "Resposta inválida na listagem de snapshots do RDS.",
+                    },
+                },
+                "commands": {
+                    "describe_resource": " ".join(describe_command),
+                    "list_snapshots": " ".join(list_snapshots_command),
+                },
+                "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
+            }
+
+        snapshots_key = "DBSnapshots" if resource_kind == "db" else "DBClusterSnapshots"
+        snapshots = snapshots_payload.get(snapshots_key, [])
+        if not isinstance(snapshots, list):
+            snapshots = []
+
+        latest_snapshot = None
+        if snapshots:
+            latest_snapshot = sorted(
+                snapshots,
+                key=lambda item: self._parse_iso_date(item.get("SnapshotCreateTime"))
+                or datetime.min.replace(tzinfo=timezone.utc),
+                reverse=True,
+            )[0]
+
+        LOGGER.info(
+            "rds.snapshots.success identifier=%s kind=%s count=%s latest=%s",
+            resource_identifier,
+            resource_kind,
+            len(snapshots),
+            latest_snapshot.get(
+                "DBSnapshotIdentifier"
+                if resource_kind == "db"
+                else "DBClusterSnapshotIdentifier"
+            )
+            if latest_snapshot
+            else None,
+        )
+
+        snapshot_identifier_key = (
+            "DBSnapshotIdentifier" if resource_kind == "db" else "DBClusterSnapshotIdentifier"
+        )
+        snapshot_arn_key = "DBSnapshotArn" if resource_kind == "db" else "DBClusterSnapshotArn"
+
+        return {
+            "status": "collected",
+            "source": "rds_snapshot_api",
+            "resource_kind": resource_kind,
+            "resource_identifier": resource_identifier,
+            "resource_status": resource_status,
+            "resource_error": resource_error,
+            "snapshot_api": {
+                "snapshots_found": len(snapshots),
+                "latest_snapshot": {
+                    "snapshot_identifier": (
+                        latest_snapshot.get(snapshot_identifier_key) if latest_snapshot else None
+                    ),
+                    "snapshot_arn": (
+                        latest_snapshot.get(snapshot_arn_key) if latest_snapshot else None
+                    ),
+                    "status": latest_snapshot.get("Status") if latest_snapshot else None,
+                    "snapshot_type": (
+                        latest_snapshot.get("SnapshotType") if latest_snapshot else None
+                    ),
+                    "snapshot_create_time": (
+                        latest_snapshot.get("SnapshotCreateTime") if latest_snapshot else None
+                    ),
+                    "engine": latest_snapshot.get("Engine") if latest_snapshot else None,
+                    "engine_version": (
+                        latest_snapshot.get("EngineVersion") if latest_snapshot else None
+                    ),
+                    "allocated_storage": (
+                        latest_snapshot.get("AllocatedStorage") if latest_snapshot else None
+                    ),
+                    "encrypted": latest_snapshot.get("Encrypted") if latest_snapshot else None,
+                    "kms_key_id": latest_snapshot.get("KmsKeyId") if latest_snapshot else None,
+                },
+                "sample_snapshots": snapshots[: self.max_recovery_points],
+            },
+            "commands": {
+                "describe_resource": " ".join(describe_command),
+                "list_snapshots": " ".join(list_snapshots_command),
+            },
+            "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
+        }
+
+    @staticmethod
     def _is_not_supported_error(stderr_output: str) -> bool:
         normalized = (stderr_output or "").lower()
         return "the resource is not supported" in normalized
@@ -615,6 +1027,64 @@ class AwsBackupEvidenceCollector:
                 "alternative_snapshot_evidence": snapshot_evidence,
                 "note": (
                     "Evidências coletadas via API de snapshots do OpenSearch com assinatura SigV4."
+                ),
+            }
+
+        if resource.resource_type in {"rds", "rds_instance", "rds_cluster"}:
+            collected_at = self._to_iso_utc(datetime.now(timezone.utc))
+            expected_kind = {
+                "rds_instance": "db",
+                "rds_cluster": "cluster",
+            }.get(resource.resource_type)
+
+            snapshot_evidence = self._collect_rds_snapshot_evidence(
+                resource.resource_arn,
+                expected_resource_kind=expected_kind,
+            )
+
+            latest_snapshot = (
+                snapshot_evidence.get("snapshot_api", {}).get("latest_snapshot")
+                if isinstance(snapshot_evidence, dict)
+                else None
+            )
+            resource_kind = (
+                snapshot_evidence.get("resource_kind")
+                if isinstance(snapshot_evidence, dict)
+                else None
+            )
+
+            latest_backup = None
+            if isinstance(latest_snapshot, dict) and latest_snapshot.get("snapshot_identifier"):
+                latest_backup = {
+                    "source": "rds_snapshot_api",
+                    "resource_kind": resource_kind,
+                    "snapshot_identifier": latest_snapshot.get("snapshot_identifier"),
+                    "snapshot_arn": latest_snapshot.get("snapshot_arn"),
+                    "status": latest_snapshot.get("status"),
+                    "snapshot_type": latest_snapshot.get("snapshot_type"),
+                    "snapshot_create_time": latest_snapshot.get("snapshot_create_time"),
+                    "engine": latest_snapshot.get("engine"),
+                    "engine_version": latest_snapshot.get("engine_version"),
+                    "encrypted": latest_snapshot.get("encrypted"),
+                }
+
+            strategy_label = (
+                "rds_db_automated_snapshots"
+                if resource_kind == "db"
+                else "rds_cluster_automated_snapshots"
+            )
+
+            return {
+                "resource_type": resource.resource_type,
+                "resource_arn": resource.resource_arn,
+                "collected_at": collected_at,
+                "status": "ok" if latest_backup else "partial",
+                "backup_service": "amazon_rds_automated_backups",
+                "collection_strategy": strategy_label,
+                "latest_backup": latest_backup,
+                "rds_snapshot_evidence": snapshot_evidence,
+                "note": (
+                    "Evidências coletadas via API de snapshots automatizados do Amazon RDS."
                 ),
             }
 
@@ -745,16 +1215,36 @@ class AwsBackupEvidenceCollector:
 
 
 def _build_default_resources() -> list[BackupResource]:
-    opensearch_resource_arn = os.getenv("OPENSEARCH_RESOURCE_ARN", "").strip()
-    if not opensearch_resource_arn:
-        return []
+    resources: list[BackupResource] = []
 
-    return [
-        BackupResource(
-            resource_type="opensearch",
-            resource_arn=opensearch_resource_arn,
+    opensearch_resource_arn = os.getenv("OPENSEARCH_RESOURCE_ARN", "").strip()
+    if opensearch_resource_arn:
+        resources.append(
+            BackupResource(
+                resource_type="opensearch",
+                resource_arn=opensearch_resource_arn,
+            )
         )
-    ]
+
+    rds_account_api_resource_arn = os.getenv("RDS_ACCOUNT_API_RESOURCE_ARN", "").strip()
+    if rds_account_api_resource_arn:
+        resources.append(
+            BackupResource(
+                resource_type="rds_instance",
+                resource_arn=rds_account_api_resource_arn,
+            )
+        )
+
+    rds_contentcore_api_resource_arn = os.getenv("RDS_CONTENTCORE_API_RESOURCE_ARN", "").strip()
+    if rds_contentcore_api_resource_arn:
+        resources.append(
+            BackupResource(
+                resource_type="rds_cluster",
+                resource_arn=rds_contentcore_api_resource_arn,
+            )
+        )
+
+    return resources
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -812,7 +1302,9 @@ def main() -> None:
 
     if not resources:
         parser.error(
-            "Nenhum recurso configurado. Defina OPENSEARCH_RESOURCE_ARN ou use --add-resource."
+            "Nenhum recurso configurado. Defina OPENSEARCH_RESOURCE_ARN, "
+            "RDS_ACCOUNT_API_RESOURCE_ARN, RDS_CONTENTCORE_API_RESOURCE_ARN "
+            "ou use --add-resource."
         )
 
     collector = AwsBackupEvidenceCollector(

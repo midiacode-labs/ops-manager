@@ -192,14 +192,20 @@ Este script invoca uma função Lambda da AWS para parar o ambiente de desenvolv
 
 ### Relatório de Evidências de Backups
 
-Para coletar evidências dos últimos backups disponíveis por recurso (iniciando por OpenSearch):
+Para coletar evidências dos últimos backups disponíveis por recurso (OpenSearch + RDS):
 
 ```bash
 export OPENSEARCH_RESOURCE_ARN=arn:aws:es:us-east-1:578416043364:domain/search-service
+export RDS_ACCOUNT_API_RESOURCE_ARN=arn:aws:rds:us-east-1:578416043364:db:account-api
+export RDS_CONTENTCORE_API_RESOURCE_ARN=arn:aws:rds:us-east-1:578416043364:cluster:contentcore-api
 python3 backup_evidence_report.py
 ```
 
-Observação: o ARN do OpenSearch agora é lido da variável de ambiente `OPENSEARCH_RESOURCE_ARN` para evitar valor hardcoded no código.
+Observação: os ARNs padrão são lidos das variáveis de ambiente abaixo para evitar valores hardcoded no código:
+
+- `OPENSEARCH_RESOURCE_ARN`
+- `RDS_ACCOUNT_API_RESOURCE_ARN` (instância RDS)
+- `RDS_CONTENTCORE_API_RESOURCE_ARN` (cluster RDS/Aurora)
 
 O script gera por padrão o arquivo `backup_evidence_report.json` com:
 

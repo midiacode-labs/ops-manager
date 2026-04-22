@@ -595,6 +595,152 @@ def _build_generic_section(report: dict, styles: dict) -> list:
     return elements
 
 
+def _build_rds_section(report: dict, styles: dict) -> list:
+    """Builds flowables for RDS instance/cluster backup evidence."""
+    elements: list = []
+    resource_type = (report.get("resource_type") or "RDS").upper()
+    resource_arn = report.get("resource_arn", "—")
+    status = report.get("status", "unknown")
+    evidence = report.get("rds_snapshot_evidence", {}) or {}
+    snapshot_api = evidence.get("snapshot_api", {}) or {}
+    resource_status = evidence.get("resource_status", {}) or {}
+
+    header_data = [
+        [
+            Paragraph(f"{resource_type}", styles["section"]),
+            Paragraph(_status_label(status), styles[_status_style_key(status)]),
+        ]
+    ]
+    header_t = Table(
+        header_data, colWidths=[CONTENT_W * 0.75, CONTENT_W * 0.25]
+    )
+    header_t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), LIGHT_GRAY),
+                ("BOX", (0, 0), (-1, -1), 0.5, BORDER_GRAY),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
+    elements.append(header_t)
+    elements.append(Spacer(1, 0.2 * cm))
+
+    elements.append(Paragraph("ARN do Recurso", styles["label"]))
+    elements.append(Paragraph(resource_arn, styles["mono"]))
+    elements.append(Spacer(1, 0.3 * cm))
+
+    elements.append(Paragraph("Coleta e Estratégia", styles["section"]))
+    elements.append(
+        _kv_table(
+            [
+                ("Coletado em", _fmt_dt(report.get("collected_at"))),
+                ("Serviço de Backup", report.get("backup_service") or "—"),
+                ("Estratégia", report.get("collection_strategy") or "—"),
+            ],
+            styles,
+        )
+    )
+    elements.append(Spacer(1, 0.3 * cm))
+
+    encrypted_label = "Sim" if resource_status.get("storage_encrypted") else "Não"
+    deletion_protection_label = (
+        "Sim" if resource_status.get("deletion_protection") else "Não"
+    )
+    elements.append(Paragraph("Recurso RDS", styles["section"]))
+    elements.append(
+        _kv_table(
+            [
+                (
+                    "Tipo do recurso",
+                    resource_status.get("resource_type")
+                    or evidence.get("resource_kind")
+                    or "—",
+                ),
+                (
+                    "Identificador",
+                    evidence.get("resource_identifier") or "—",
+                ),
+                ("Engine", resource_status.get("engine") or "—"),
+                ("Versão do engine", resource_status.get("engine_version") or "—"),
+                (
+                    "Retenção de backup (dias)",
+                    str(resource_status.get("backup_retention_period") or "—"),
+                ),
+                (
+                    "Janela preferencial",
+                    resource_status.get("preferred_backup_window") or "—",
+                ),
+                (
+                    "Último ponto restaurável",
+                    _fmt_dt(resource_status.get("latest_restorable_time")),
+                ),
+                ("Criptografado", encrypted_label),
+                ("Deletion protection", deletion_protection_label),
+            ],
+            styles,
+        )
+    )
+    elements.append(Spacer(1, 0.3 * cm))
+
+    latest_snapshot = snapshot_api.get("latest_snapshot") or {}
+    elements.append(Paragraph("Snapshots Automatizados", styles["section"]))
+    elements.append(
+        _kv_table(
+            [
+                ("Snapshots encontrados", str(snapshot_api.get("snapshots_found") or 0)),
+                (
+                    "Snapshot mais recente",
+                    latest_snapshot.get("snapshot_identifier") or "—",
+                ),
+                ("Status", latest_snapshot.get("status") or "—"),
+                ("Tipo", latest_snapshot.get("snapshot_type") or "—"),
+                (
+                    "Criado em",
+                    _fmt_dt(latest_snapshot.get("snapshot_create_time")),
+                ),
+                ("Engine", latest_snapshot.get("engine") or "—"),
+                (
+                    "Versão do engine",
+                    latest_snapshot.get("engine_version") or "—",
+                ),
+                (
+                    "Criptografado",
+                    "Sim" if latest_snapshot.get("encrypted") else "Não",
+                ),
+            ],
+            styles,
+        )
+    )
+
+    resource_error = evidence.get("resource_error")
+    snapshot_error = snapshot_api.get("error")
+    if resource_error or snapshot_error:
+        elements.append(Spacer(1, 0.2 * cm))
+        elements.append(Paragraph("Erros de Coleta", styles["section"]))
+        if resource_error:
+            msg = (
+                resource_error.get("message", str(resource_error))
+                if isinstance(resource_error, dict)
+                else str(resource_error)
+            )
+            elements.append(Paragraph(f"Metadados do recurso: {msg}", styles["badge_error"]))
+        if snapshot_error:
+            msg = (
+                snapshot_error.get("message", str(snapshot_error))
+                if isinstance(snapshot_error, dict)
+                else str(snapshot_error)
+            )
+            elements.append(Paragraph(f"Snapshots: {msg}", styles["badge_error"]))
+
+    return elements
+
+
 # ── Página com cabeçalho e rodapé ─────────────────────────────────────────────────
 
 
@@ -747,6 +893,8 @@ def generate_pdf(report_data: dict, system_url: str = "") -> bytes:
         resource_type = (report.get("resource_type") or "").lower()
         if resource_type == "opensearch":
             elements.extend(_build_opensearch_section(report, styles))
+        elif resource_type in {"rds", "rds_instance", "rds_cluster"}:
+            elements.extend(_build_rds_section(report, styles))
         else:
             elements.extend(_build_generic_section(report, styles))
 

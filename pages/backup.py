@@ -165,6 +165,18 @@ def _build_resources() -> list[BackupResource]:
     if opensearch_arn:
         resources.append(BackupResource(resource_type="opensearch", resource_arn=opensearch_arn))
 
+    rds_account_api_arn = os.getenv("RDS_ACCOUNT_API_RESOURCE_ARN", "").strip()
+    if rds_account_api_arn:
+        resources.append(
+            BackupResource(resource_type="rds_instance", resource_arn=rds_account_api_arn)
+        )
+
+    rds_contentcore_api_arn = os.getenv("RDS_CONTENTCORE_API_RESOURCE_ARN", "").strip()
+    if rds_contentcore_api_arn:
+        resources.append(
+            BackupResource(resource_type="rds_cluster", resource_arn=rds_contentcore_api_arn)
+        )
+
     return resources
 
 
@@ -195,6 +207,8 @@ def _resource_type_label(resource_type: str) -> str:
     labels = {
         "opensearch": "OpenSearch",
         "rds": "RDS",
+        "rds_instance": "RDS Instance",
+        "rds_cluster": "RDS Cluster",
         "dynamodb": "DynamoDB",
     }
     return labels.get(resource_type.lower(), resource_type.upper())
@@ -532,13 +546,176 @@ def _render_generic_report(report: dict) -> None:
             st.error(error.get("message", str(error)))
 
 
+def _render_rds_report(report: dict) -> None:
+    resource_type = _resource_type_label(report.get("resource_type", ""))
+    resource_arn = report.get("resource_arn", "")
+    status = report.get("status", "unknown")
+    latest_backup = report.get("latest_backup")
+    evidence = report.get("rds_snapshot_evidence", {}) or {}
+    snapshot_api = evidence.get("snapshot_api", {}) or {}
+    resource_status = evidence.get("resource_status", {}) or {}
+
+    st.markdown(
+        f"""
+        <div class="backup-card">
+            <div class="backup-card-title">🗄️ {resource_type}</div>
+            <div class="backup-card-arn">{resource_arn}</div>
+            {_status_badge(status)}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown('<div class="backup-meta-label">Engine</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="backup-meta-value">{resource_status.get("engine") or "—"}</div>',
+            unsafe_allow_html=True,
+        )
+    with col2:
+        st.markdown('<div class="backup-meta-label">Último Snapshot</div>', unsafe_allow_html=True)
+        snapshot_create_time = (
+            latest_backup.get("snapshot_create_time") if latest_backup else None
+        )
+        st.markdown(
+            f'<div class="backup-meta-value">{_format_datetime(snapshot_create_time)}</div>',
+            unsafe_allow_html=True,
+        )
+    with col3:
+        st.markdown('<div class="backup-meta-label">Estado</div>', unsafe_allow_html=True)
+        snapshot_status = latest_backup.get("status") if latest_backup else None
+        st.markdown(
+            f'<div class="backup-meta-value">{snapshot_status or "—"}</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    with st.expander("Ver detalhes"):
+        st.markdown("**Coleta e Estratégia**")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown(
+                '<div class="backup-meta-label">Coletado em</div>',
+                unsafe_allow_html=True,
+            )
+            collected_at_label = _format_datetime(report.get("collected_at"))
+            st.markdown(
+                f'<div class="backup-meta-value">{collected_at_label}</div>',
+                unsafe_allow_html=True,
+            )
+        with c2:
+            st.markdown(
+                '<div class="backup-meta-label">Serviço de Backup</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f'<div class="backup-meta-value">{report.get("backup_service") or "—"}</div>',
+                unsafe_allow_html=True,
+            )
+        with c3:
+            st.markdown(
+                '<div class="backup-meta-label">Estratégia</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f'<div class="backup-meta-value">{report.get("collection_strategy") or "—"}</div>',
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("---")
+        st.markdown("**Recurso RDS**")
+        resource_type_label = (
+            resource_status.get("resource_type")
+            or evidence.get("resource_kind")
+            or "—"
+        )
+        retention_period = resource_status.get("backup_retention_period") or "—"
+        backup_window = resource_status.get("preferred_backup_window") or "—"
+        latest_restorable = _format_datetime(
+            resource_status.get("latest_restorable_time")
+        )
+        st.markdown(
+            f"- **Tipo:** `{resource_type_label}`\n"
+            f"- **Identificador:** `{evidence.get('resource_identifier') or '—'}`\n"
+            f"- **Engine:** `{resource_status.get('engine') or '—'}`\n"
+            f"- **Versão:** `{resource_status.get('engine_version') or '—'}`\n"
+            f"- **Retenção de Backup (dias):** `{retention_period}`\n"
+            f"- **Janela Preferencial de Backup:** `{backup_window}`\n"
+            f"- **Último Ponto Restaurável:** `{latest_restorable}`\n"
+            f"- **Criptografado:** `{'Sim' if resource_status.get('storage_encrypted') else 'Não'}`"
+        )
+
+        st.markdown("---")
+        st.markdown("**Snapshots Automatizados**")
+        st.markdown(
+            f"- **Snapshots encontrados:** `{snapshot_api.get('snapshots_found') or 0}`"
+        )
+
+        latest_snapshot = snapshot_api.get("latest_snapshot") or {}
+        if latest_snapshot.get("snapshot_identifier"):
+            snapshot_created = _format_datetime(
+                latest_snapshot.get("snapshot_create_time")
+            )
+            st.markdown(
+                f"- **Snapshot mais recente:** `{latest_snapshot.get('snapshot_identifier')}`\n"
+                f"- **Status:** `{latest_snapshot.get('status') or '—'}`\n"
+                f"- **Tipo:** `{latest_snapshot.get('snapshot_type') or '—'}`\n"
+                f"- **Criado em:** `{snapshot_created}`\n"
+                f"- **Engine:** `{latest_snapshot.get('engine') or '—'}`\n"
+                f"- **Versão Engine:** `{latest_snapshot.get('engine_version') or '—'}`\n"
+                f"- **Criptografado:** `{'Sim' if latest_snapshot.get('encrypted') else 'Não'}`"
+            )
+
+        sample_snapshots = snapshot_api.get("sample_snapshots") or []
+        if sample_snapshots:
+            import pandas as pd
+
+            rows = []
+            for snapshot in sample_snapshots:
+                identifier = snapshot.get("DBSnapshotIdentifier") or snapshot.get(
+                    "DBClusterSnapshotIdentifier"
+                )
+                rows.append(
+                    {
+                        "Snapshot": identifier or "—",
+                        "Status": snapshot.get("Status") or "—",
+                        "Tipo": snapshot.get("SnapshotType") or "—",
+                        "Criado em": _format_datetime(snapshot.get("SnapshotCreateTime")),
+                        "Engine": snapshot.get("Engine") or "—",
+                        "Versão": snapshot.get("EngineVersion") or "—",
+                    }
+                )
+
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        if evidence.get("resource_error"):
+            st.markdown("---")
+            resource_error_message = evidence.get("resource_error", {}).get(
+                "message", "Erro não identificado."
+            )
+            st.error(
+                f"Metadados do recurso: {resource_error_message}"
+            )
+
+        if snapshot_api.get("error"):
+            snapshot_error_message = snapshot_api.get("error", {}).get(
+                "message", "Erro não identificado."
+            )
+            st.error(
+                f"Snapshots: {snapshot_error_message}"
+            )
+
+
 # ── Layout principal ─────────────────────────────────────────────────────────────
 
 resources = _build_resources()
 
 if not resources:
     st.warning(
-        "Nenhum recurso configurado. Defina `OPENSEARCH_RESOURCE_ARN` no arquivo `.env`."
+        "Nenhum recurso configurado. Defina `OPENSEARCH_RESOURCE_ARN`, "
+        "`RDS_ACCOUNT_API_RESOURCE_ARN` ou `RDS_CONTENTCORE_API_RESOURCE_ARN` no arquivo `.env`."
     )
     st.stop()
 
@@ -601,5 +778,7 @@ for report in reports:
 
     if resource_type == "opensearch":
         _render_opensearch_report(report)
+    elif resource_type in {"rds", "rds_instance", "rds_cluster"}:
+        _render_rds_report(report)
     else:
         _render_generic_report(report)
