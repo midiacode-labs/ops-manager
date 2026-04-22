@@ -48,7 +48,6 @@ def main():
         action="parado",
         source="cli",
         status_code=status_code,
-        payload=payload,
     )
 
     if status_code == 200:
