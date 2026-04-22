@@ -195,8 +195,11 @@ Este script invoca uma função Lambda da AWS para parar o ambiente de desenvolv
 Para coletar evidências dos últimos backups disponíveis por recurso (iniciando por OpenSearch):
 
 ```bash
+export OPENSEARCH_RESOURCE_ARN=arn:aws:es:us-east-1:578416043364:domain/search-service
 python3 backup_evidence_report.py
 ```
+
+Observação: o ARN do OpenSearch agora é lido da variável de ambiente `OPENSEARCH_RESOURCE_ARN` para evitar valor hardcoded no código.
 
 O script gera por padrão o arquivo `backup_evidence_report.json` com:
 

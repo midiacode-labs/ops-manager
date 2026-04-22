@@ -10,12 +10,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 @dataclass
@@ -65,6 +71,65 @@ class AwsBackupEvidenceCollector:
         except FileNotFoundError:
             return None
 
+    def _run_command(self, command: list[str]) -> subprocess.CompletedProcess[str] | None:
+        try:
+            return subprocess.run(command, capture_output=True, text=True, check=False)
+        except FileNotFoundError:
+            return None
+
+    def _sanitize_command(self, command: list[str]) -> str:
+        sanitized = command[:]
+        if "--user" in sanitized:
+            user_index = sanitized.index("--user")
+            if user_index + 1 < len(sanitized):
+                sanitized[user_index + 1] = "<redacted>"
+
+        if "--header" in sanitized:
+            indexes = [idx for idx, value in enumerate(sanitized) if value == "--header"]
+            for header_index in indexes:
+                if header_index + 1 < len(sanitized):
+                    header_value = sanitized[header_index + 1].lower()
+                    if "x-amz-security-token" in header_value:
+                        sanitized[header_index + 1] = "x-amz-security-token: <redacted>"
+
+        return " ".join(sanitized)
+
+    def _resolve_sigv4_credentials(self) -> tuple[str, str, str | None] | None:
+        access_key = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
+        secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()
+        session_token = os.getenv("AWS_SESSION_TOKEN", "").strip() or None
+
+        if access_key and secret_key:
+            return access_key, secret_key, session_token
+
+        export_command = [
+            "aws",
+            "configure",
+            "export-credentials",
+            "--format",
+            "process",
+        ]
+        if self.profile:
+            export_command.extend(["--profile", self.profile])
+
+        export_result = self._run_aws_cli(export_command)
+        if export_result is None or export_result.returncode != 0:
+            return None
+
+        try:
+            credentials_payload = json.loads(export_result.stdout or "{}")
+        except json.JSONDecodeError:
+            return None
+
+        access_key = credentials_payload.get("AccessKeyId", "").strip()
+        secret_key = credentials_payload.get("SecretAccessKey", "").strip()
+        session_token = credentials_payload.get("SessionToken", "").strip() or None
+
+        if not access_key or not secret_key:
+            return None
+
+        return access_key, secret_key, session_token
+
     @staticmethod
     def _parse_opensearch_domain_name(resource_arn: str) -> str | None:
         marker = ":domain/"
@@ -80,16 +145,57 @@ class AwsBackupEvidenceCollector:
             return None
         return parts[4] or None
 
+    @staticmethod
+    def _extract_opensearch_endpoint(domain_payload: dict[str, Any]) -> str | None:
+        endpoint = domain_payload.get("Endpoint")
+        if endpoint:
+            return f"https://{endpoint}"
+
+        endpoints = domain_payload.get("Endpoints")
+        if isinstance(endpoints, dict):
+            preferred = endpoints.get("vpc") or endpoints.get("VPC")
+            if preferred:
+                return f"https://{preferred}"
+            if endpoints:
+                first_value = next(iter(endpoints.values()))
+                if isinstance(first_value, str) and first_value:
+                    return f"https://{first_value}"
+
+        return None
+
+    def _build_sigv4_curl_command(self, url: str) -> list[str] | None:
+        credentials = self._resolve_sigv4_credentials()
+        if credentials is None:
+            return None
+
+        access_key, secret_key, session_token = credentials
+
+        command = [
+            "curl",
+            "--silent",
+            "--show-error",
+            "--fail-with-body",
+            "--aws-sigv4",
+            f"aws:amz:{self.region}:es",
+            "--user",
+            f"{access_key}:{secret_key}",
+            url,
+        ]
+
+        if session_token:
+            command.extend(["--header", f"x-amz-security-token: {session_token}"])
+
+        return command
+
     def _collect_opensearch_snapshot_evidence(self, resource_arn: str) -> dict[str, Any]:
         domain_name = self._parse_opensearch_domain_name(resource_arn)
-        account_id = self._parse_account_id(resource_arn)
 
-        if not domain_name or not account_id:
+        if not domain_name:
             return {
                 "status": "unavailable",
                 "error": {
-                    "type": "invalid_opensearch_arn",
-                    "message": "Não foi possível extrair DomainName/AccountId do ARN OpenSearch.",
+                    "type": "invalid_opensearch_domain_arn",
+                    "message": "Não foi possível extrair DomainName do ARN OpenSearch.",
                 },
             }
 
@@ -126,6 +232,7 @@ class AwsBackupEvidenceCollector:
             try:
                 describe_payload = json.loads(describe_result.stdout or "{}")
                 domain_payload = describe_payload.get("DomainStatus", {})
+                endpoint_url = self._extract_opensearch_endpoint(domain_payload)
                 domain_status = {
                     "domain_name": domain_payload.get("DomainName"),
                     "engine_version": domain_payload.get("EngineVersion"),
@@ -133,6 +240,8 @@ class AwsBackupEvidenceCollector:
                     "created": domain_payload.get("Created"),
                     "deleted": domain_payload.get("Deleted"),
                     "endpoint": domain_payload.get("Endpoint"),
+                    "endpoints": domain_payload.get("Endpoints"),
+                    "endpoint_url": endpoint_url,
                     "arn": domain_payload.get("ARN"),
                 }
             except json.JSONDecodeError:
@@ -141,99 +250,270 @@ class AwsBackupEvidenceCollector:
                     "message": "Resposta inválida no describe-domain do OpenSearch.",
                 }
 
-        end_time = datetime.now(timezone.utc)
-        start_time = end_time - timedelta(days=14)
-        metric_command = [
-            "aws",
-            "cloudwatch",
-            "get-metric-statistics",
-            "--namespace",
-            "AWS/ES",
-            "--metric-name",
-            "AutomatedSnapshotFailure",
-            "--dimensions",
-            f"Name=DomainName,Value={domain_name}",
-            f"Name=ClientId,Value={account_id}",
-            "--start-time",
-            end_time.replace(microsecond=0).isoformat(),
-            "--end-time",
-            start_time.replace(microsecond=0).isoformat(),
-            "--period",
-            "86400",
-            "--statistics",
-            "Maximum",
-            "--region",
-            self.region,
-            "--output",
-            "json",
-        ]
-        metric_command[metric_command.index("--start-time") + 1] = start_time.replace(
-            microsecond=0
-        ).isoformat()
-        metric_command[metric_command.index("--end-time") + 1] = end_time.replace(
-            microsecond=0
-        ).isoformat()
-
-        if self.profile:
-            metric_command.extend(["--profile", self.profile])
-
-        metric_result = self._run_aws_cli(metric_command)
-        metric_error: dict[str, Any] | None = None
-        latest_datapoint: dict[str, Any] | None = None
-
-        if metric_result is None:
-            metric_error = {
-                "type": "aws_cli_not_found",
-                "message": "AWS CLI não encontrada para consulta de métricas CloudWatch.",
+        endpoint_url = domain_status.get("endpoint_url") if domain_status else None
+        if not endpoint_url:
+            return {
+                "status": "partial",
+                "source": "opensearch_snapshot_api",
+                "domain_status": domain_status,
+                "domain_error": domain_error,
+                "snapshot_api": {
+                    "error": {
+                        "type": "missing_domain_endpoint",
+                        "message": "Não foi possível identificar o endpoint do domínio OpenSearch.",
+                    }
+                },
+                "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
             }
-        elif metric_result.returncode != 0:
-            metric_error = {
-                "type": "cloudwatch_metric_error",
-                "message": "Falha ao consultar métrica AutomatedSnapshotFailure.",
-                "stderr": metric_result.stderr.strip(),
-            }
-        else:
-            try:
-                metric_payload = json.loads(metric_result.stdout or "{}")
-                datapoints = metric_payload.get("Datapoints", [])
-                if isinstance(datapoints, list) and datapoints:
-                    latest_datapoint = sorted(
-                        datapoints,
-                        key=lambda item: self._parse_iso_date(item.get("Timestamp")),
-                        reverse=True,
-                    )[0]
-            except json.JSONDecodeError:
-                metric_error = {
-                    "type": "cloudwatch_metric_invalid_json",
-                    "message": "Resposta inválida no get-metric-statistics.",
-                }
 
-        snapshot_health = "unknown"
-        if latest_datapoint and latest_datapoint.get("Maximum") == 0:
-            snapshot_health = "ok"
-        elif latest_datapoint and latest_datapoint.get("Maximum") is not None:
-            snapshot_health = "failure_detected"
+        list_repos_url = f"{endpoint_url}/_snapshot"
+        repo_command = self._build_sigv4_curl_command(list_repos_url)
+        if repo_command is None:
+            return {
+                "status": "partial",
+                "source": "opensearch_snapshot_api",
+                "domain_status": domain_status,
+                "domain_error": domain_error,
+                "snapshot_api": {
+                    "error": {
+                        "type": "missing_sigv4_credentials",
+                        "message": (
+                            "Não foi possível obter credenciais AWS para consulta da API de "
+                            "snapshots com assinatura SigV4."
+                        ),
+                    }
+                },
+                "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
+            }
+
+        repo_result = self._run_command(repo_command)
+        if repo_result is None:
+            return {
+                "status": "partial",
+                "source": "opensearch_snapshot_api",
+                "domain_status": domain_status,
+                "domain_error": domain_error,
+                "snapshot_api": {
+                    "error": {
+                        "type": "curl_not_found",
+                        "message": "Comando curl não encontrado para chamada da API de snapshots.",
+                    },
+                    "commands": {
+                        "list_repositories": self._sanitize_command(repo_command)
+                    },
+                },
+                "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
+            }
+
+        if repo_result.returncode != 0:
+            return {
+                "status": "partial",
+                "source": "opensearch_snapshot_api",
+                "domain_status": domain_status,
+                "domain_error": domain_error,
+                "snapshot_api": {
+                    "error": {
+                        "type": "list_repositories_error",
+                        "message": "Falha ao consultar repositórios de snapshots do OpenSearch.",
+                        "stderr": repo_result.stderr.strip(),
+                        "stdout": repo_result.stdout.strip(),
+                    },
+                    "commands": {
+                        "list_repositories": self._sanitize_command(repo_command)
+                    },
+                },
+                "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
+            }
+
+        try:
+            repos_payload = json.loads(repo_result.stdout or "{}")
+        except json.JSONDecodeError:
+            return {
+                "status": "partial",
+                "source": "opensearch_snapshot_api",
+                "domain_status": domain_status,
+                "domain_error": domain_error,
+                "snapshot_api": {
+                    "error": {
+                        "type": "list_repositories_invalid_json",
+                        "message": "Resposta inválida na listagem de repositórios do OpenSearch.",
+                    },
+                    "commands": {
+                        "list_repositories": self._sanitize_command(repo_command)
+                    },
+                },
+                "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
+            }
+
+        repositories = list(repos_payload.keys()) if isinstance(repos_payload, dict) else []
+        preferred_repo = os.getenv("OPENSEARCH_SNAPSHOT_REPOSITORY", "").strip()
+
+        selected_repo = None
+        if preferred_repo and preferred_repo in repositories:
+            selected_repo = preferred_repo
+        elif "cs-automated-enc" in repositories:
+            selected_repo = "cs-automated-enc"
+        elif "cs-automated" in repositories:
+            selected_repo = "cs-automated"
+        elif repositories:
+            selected_repo = repositories[0]
+
+        if not selected_repo:
+            return {
+                "status": "partial",
+                "source": "opensearch_snapshot_api",
+                "domain_status": domain_status,
+                "domain_error": domain_error,
+                "snapshot_api": {
+                    "repositories": repositories,
+                    "error": {
+                        "type": "no_snapshot_repository_found",
+                        "message": "Nenhum repositório de snapshot foi encontrado no domínio.",
+                    },
+                    "commands": {
+                        "list_repositories": self._sanitize_command(repo_command)
+                    },
+                },
+                "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
+            }
+
+        snapshots_url = f"{endpoint_url}/_snapshot/{quote(selected_repo, safe='')}/_all"
+        snapshots_command = self._build_sigv4_curl_command(snapshots_url)
+        if snapshots_command is None:
+            return {
+                "status": "partial",
+                "source": "opensearch_snapshot_api",
+                "domain_status": domain_status,
+                "domain_error": domain_error,
+                "snapshot_api": {
+                    "repositories": repositories,
+                    "selected_repository": selected_repo,
+                    "error": {
+                        "type": "missing_sigv4_credentials",
+                        "message": (
+                            "Não foi possível obter credenciais AWS para consulta da API de "
+                            "snapshots com assinatura SigV4."
+                        ),
+                    },
+                    "commands": {
+                        "list_repositories": self._sanitize_command(repo_command),
+                    },
+                },
+                "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
+            }
+
+        snapshots_result = self._run_command(snapshots_command)
+        if snapshots_result is None:
+            return {
+                "status": "partial",
+                "source": "opensearch_snapshot_api",
+                "domain_status": domain_status,
+                "domain_error": domain_error,
+                "snapshot_api": {
+                    "repositories": repositories,
+                    "selected_repository": selected_repo,
+                    "error": {
+                        "type": "curl_not_found",
+                        "message": "Comando curl não encontrado para consulta de snapshots.",
+                    },
+                    "commands": {
+                        "list_repositories": self._sanitize_command(repo_command),
+                        "list_snapshots": self._sanitize_command(snapshots_command),
+                    },
+                },
+                "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
+            }
+
+        if snapshots_result.returncode != 0:
+            return {
+                "status": "partial",
+                "source": "opensearch_snapshot_api",
+                "domain_status": domain_status,
+                "domain_error": domain_error,
+                "snapshot_api": {
+                    "repositories": repositories,
+                    "selected_repository": selected_repo,
+                    "error": {
+                        "type": "list_snapshots_error",
+                        "message": "Falha ao consultar snapshots do repositório selecionado.",
+                        "stderr": snapshots_result.stderr.strip(),
+                        "stdout": snapshots_result.stdout.strip(),
+                    },
+                    "commands": {
+                        "list_repositories": self._sanitize_command(repo_command),
+                        "list_snapshots": self._sanitize_command(snapshots_command),
+                    },
+                },
+                "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
+            }
+
+        try:
+            snapshots_payload = json.loads(snapshots_result.stdout or "{}")
+        except json.JSONDecodeError:
+            return {
+                "status": "partial",
+                "source": "opensearch_snapshot_api",
+                "domain_status": domain_status,
+                "domain_error": domain_error,
+                "snapshot_api": {
+                    "repositories": repositories,
+                    "selected_repository": selected_repo,
+                    "error": {
+                        "type": "list_snapshots_invalid_json",
+                        "message": "Resposta inválida na listagem de snapshots.",
+                    },
+                    "commands": {
+                        "list_repositories": self._sanitize_command(repo_command),
+                        "list_snapshots": self._sanitize_command(snapshots_command),
+                    },
+                },
+                "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
+            }
+
+        snapshots = snapshots_payload.get("snapshots", [])
+        if not isinstance(snapshots, list):
+            snapshots = []
+
+        latest_snapshot = None
+        if snapshots:
+            latest_snapshot = sorted(
+                snapshots,
+                key=lambda item: item.get("start_time_in_millis") or 0,
+                reverse=True,
+            )[0]
 
         return {
-            "status": "collected" if not metric_error else "partial",
-            "source": "cloudwatch_automated_snapshot_metric",
+            "status": "collected",
+            "source": "opensearch_snapshot_api",
             "domain_status": domain_status,
             "domain_error": domain_error,
-            "metric": {
-                "namespace": "AWS/ES",
-                "metric_name": "AutomatedSnapshotFailure",
-                "dimensions": {
-                    "DomainName": domain_name,
-                    "ClientId": account_id,
+            "snapshot_api": {
+                "repositories": repositories,
+                "selected_repository": selected_repo,
+                "snapshots_found": len(snapshots),
+                "latest_snapshot": {
+                    "snapshot": latest_snapshot.get("snapshot") if latest_snapshot else None,
+                    "state": latest_snapshot.get("state") if latest_snapshot else None,
+                    "start_time": latest_snapshot.get("start_time") if latest_snapshot else None,
+                    "end_time": latest_snapshot.get("end_time") if latest_snapshot else None,
+                    "start_time_in_millis": (
+                        latest_snapshot.get("start_time_in_millis") if latest_snapshot else None
+                    ),
+                    "end_time_in_millis": (
+                        latest_snapshot.get("end_time_in_millis") if latest_snapshot else None
+                    ),
+                    "indices_count": (
+                        len(latest_snapshot.get("indices", []))
+                        if latest_snapshot and isinstance(latest_snapshot.get("indices"), list)
+                        else None
+                    ),
                 },
-                "window_days": 14,
-                "latest_datapoint": latest_datapoint,
-                "snapshot_health": snapshot_health,
-                "error": metric_error,
+                "sample_snapshots": snapshots[: self.max_recovery_points],
             },
             "commands": {
                 "describe_domain": " ".join(describe_command),
-                "get_metric_statistics": " ".join(metric_command),
+                "list_repositories": self._sanitize_command(repo_command),
+                "list_snapshots": self._sanitize_command(snapshots_command),
             },
             "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
         }
@@ -300,20 +580,23 @@ class AwsBackupEvidenceCollector:
                 resource.resource_arn
             )
 
-            latest_datapoint = (
-                snapshot_evidence.get("metric", {}).get("latest_datapoint")
+            latest_snapshot = (
+                snapshot_evidence.get("snapshot_api", {}).get("latest_snapshot")
                 if isinstance(snapshot_evidence, dict)
                 else None
             )
 
             latest_backup = None
-            if isinstance(latest_datapoint, dict):
+            if isinstance(latest_snapshot, dict) and latest_snapshot.get("snapshot"):
                 latest_backup = {
-                    "source": "cloudwatch_automated_snapshot_metric",
-                    "timestamp": latest_datapoint.get("Timestamp"),
-                    "status": snapshot_evidence.get("metric", {}).get("snapshot_health"),
-                    "metric_value": latest_datapoint.get("Maximum"),
-                    "unit": latest_datapoint.get("Unit"),
+                    "source": "opensearch_snapshot_api",
+                    "repository": snapshot_evidence.get("snapshot_api", {}).get(
+                        "selected_repository"
+                    ),
+                    "snapshot": latest_snapshot.get("snapshot"),
+                    "state": latest_snapshot.get("state"),
+                    "start_time": latest_snapshot.get("start_time"),
+                    "end_time": latest_snapshot.get("end_time"),
                 }
 
             return {
@@ -322,12 +605,11 @@ class AwsBackupEvidenceCollector:
                 "collected_at": collected_at,
                 "status": "ok" if latest_backup else "partial",
                 "backup_service": "opensearch_managed_snapshots",
-                "collection_strategy": "opensearch_cloudwatch",
+                "collection_strategy": "opensearch_snapshot_api_sigv4",
                 "latest_backup": latest_backup,
                 "alternative_snapshot_evidence": snapshot_evidence,
                 "note": (
-                    "OpenSearch não usa AWS Backup para este tipo de ARN. "
-                    "As evidências foram coletadas por OpenSearch/CloudWatch."
+                    "Evidências coletadas via API de snapshots do OpenSearch com assinatura SigV4."
                 ),
             }
 
@@ -458,10 +740,14 @@ class AwsBackupEvidenceCollector:
 
 
 def _build_default_resources() -> list[BackupResource]:
+    opensearch_resource_arn = os.getenv("OPENSEARCH_RESOURCE_ARN", "").strip()
+    if not opensearch_resource_arn:
+        return []
+
     return [
         BackupResource(
             resource_type="opensearch",
-            resource_arn="arn:aws:es:us-east-1:578416043364:domain/search-service",
+            resource_arn=opensearch_resource_arn,
         )
     ]
 
@@ -518,6 +804,11 @@ def main() -> None:
                     resource_arn=resource_arn,
                 )
             )
+
+    if not resources:
+        parser.error(
+            "Nenhum recurso configurado. Defina OPENSEARCH_RESOURCE_ARN ou use --add-resource."
+        )
 
     collector = AwsBackupEvidenceCollector(
         resources=resources,
