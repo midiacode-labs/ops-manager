@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from slack_notifications import send_slack_deploy_notification
 from auth import display_auth_ui
+from app_version import get_app_version
 
 
 LOGGER = logging.getLogger("ops_manager.app")
@@ -22,6 +23,7 @@ if not LOGGER.handlers:
     LOGGER.addHandler(_handler)
 LOGGER.setLevel(os.getenv("APP_LOG_LEVEL", os.getenv("AUTH_LOG_LEVEL", "INFO")).upper())
 LOGGER.propagate = False
+APP_VERSION = get_app_version()
 
 
 def _get_trace_id() -> str:
@@ -417,5 +419,6 @@ st.caption(f"Última atualização: {st.session_state.last_refresh_time}")
 st.markdown("""
 <div class="footer">
     <div>© """ + str(datetime.now().year) + """ Midiacode Ops Manager</div>
+    <div>Versão """ + APP_VERSION + """</div>
 </div>
 """, unsafe_allow_html=True)

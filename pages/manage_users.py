@@ -10,6 +10,7 @@ import os
 from datetime import datetime
 from uuid import uuid4
 from auth import get_supabase_client, display_auth_ui, get_current_user
+from app_version import get_app_version
 
 
 LOGGER = logging.getLogger("ops_manager.manage_users")
@@ -21,6 +22,7 @@ if not LOGGER.handlers:
     LOGGER.addHandler(_handler)
 LOGGER.setLevel(os.getenv("APP_LOG_LEVEL", os.getenv("AUTH_LOG_LEVEL", "INFO")).upper())
 LOGGER.propagate = False
+APP_VERSION = get_app_version()
 
 
 def _render_manage_users_styles():
@@ -807,5 +809,6 @@ st.markdown("""
 <div style='text-align: center; color: #888; font-size: 12px;'>
     <p>Você está autenticado como <strong>{email}</strong></p>
     <p>Apenas usuários aprovados podem acessar esta página.</p>
+    <p>Versão {version}</p>
 </div>
-""".format(email=current_user.email), unsafe_allow_html=True)
+""".format(email=current_user.email, version=APP_VERSION), unsafe_allow_html=True)

@@ -1379,20 +1379,24 @@ def display_auth_ui():
     """
     _log_auth(logging.DEBUG, "display_auth_ui.start")
     initialize_auth_session()
-    _hydrate_recovery_tokens_from_hash()
-    _capture_recovery_tokens_from_query()
-    _capture_auth_tokens_from_query()
-    _restore_session_from_local_storage_tokens()
-    _hydrate_auth_tokens_from_local_storage()
+    session_valid = check_session()
 
-    requested_mode = st.query_params.get("auth_mode")
-    if isinstance(requested_mode, list):
-        requested_mode = requested_mode[-1] if requested_mode else None
-    if requested_mode in {"signin", "signup", "reset"}:
-        st.session_state.auth_mode = requested_mode
-        if "auth_mode" in st.query_params:
-            del st.query_params["auth_mode"]
-        st.rerun()
+    if not session_valid:
+        _hydrate_recovery_tokens_from_hash()
+        _capture_recovery_tokens_from_query()
+        _capture_auth_tokens_from_query()
+        _restore_session_from_local_storage_tokens()
+        _hydrate_auth_tokens_from_local_storage()
+        session_valid = check_session()
+
+        requested_mode = st.query_params.get("auth_mode")
+        if isinstance(requested_mode, list):
+            requested_mode = requested_mode[-1] if requested_mode else None
+        if requested_mode in {"signin", "signup", "reset"}:
+            st.session_state.auth_mode = requested_mode
+            if "auth_mode" in st.query_params:
+                del st.query_params["auth_mode"]
+            st.rerun()
 
     def _render_feedback() -> None:
         feedback = st.session_state.get("auth_feedback")
@@ -1410,7 +1414,7 @@ def display_auth_ui():
             st.info(message)
 
     # Verificar sessão existente
-    if not check_session():
+    if not session_valid:
         _log_auth(logging.INFO, "display_auth_ui.not_authenticated")
         apply_login_theme()
 

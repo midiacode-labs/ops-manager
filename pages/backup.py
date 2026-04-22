@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from auth import display_auth_ui
 from backup_evidence_report import AwsBackupEvidenceCollector, BackupResource
 from backup_pdf_report import generate_pdf
+from app_version import get_app_version
 
 load_dotenv()
 
@@ -24,6 +25,7 @@ if not LOGGER.handlers:
     LOGGER.addHandler(_handler)
 LOGGER.setLevel(os.getenv("APP_LOG_LEVEL", "INFO").upper())
 LOGGER.propagate = False
+APP_VERSION = get_app_version()
 
 # ── Autenticação ────────────────────────────────────────────────────────────────
 
@@ -968,3 +970,14 @@ for index, report in enumerate(ordered_reports, start=1):
         _render_rds_report(report)
     else:
         _render_generic_report(report)
+
+st.markdown("---")
+st.markdown(
+    f"""
+    <div style='text-align: center; color: #64748b; font-size: 12px;'>
+        <p>© {datetime.now().year} Midiacode Ops Manager</p>
+        <p>Versão {APP_VERSION}</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
