@@ -10,14 +10,22 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def send_slack_deploy_notification(action, source, status_code, payload):
+def send_slack_deploy_notification(action, source, status_code):
     webhook_url = os.getenv("SLACK_DEPLOY_WEBHOOK_URL")
     if not webhook_url:
-        return False, "SLACK_DEPLOY_WEBHOOK_URL nao configurada"
+        return False, "SLACK_DEPLOY_WEBHOOK_URL não configurada"
 
     environment_name = os.getenv("DEPLOY_ENVIRONMENT_NAME", "development")
     application_name = os.getenv("SLACK_DEPLOY_APP_NAME", "Midiacode Ops Manager")
-    status_label = "sucesso" if status_code == 200 else "falha"
+    status_label = "✅ sucesso" if status_code == 200 else "❌ falha"
+
+    _action_lower = action.lower()
+    if any(kw in _action_lower for kw in ("inici", "start", "up", "liga")):
+        action_emoji = "🟢"
+    elif any(kw in _action_lower for kw in ("par", "stop", "down", "deslig")):
+        action_emoji = "🔴"
+    else:
+        action_emoji = "🔵"
 
     message = {
         "text": (
@@ -29,7 +37,7 @@ def send_slack_deploy_notification(action, source, status_code, payload):
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": f"Deploy notification: {action}",
+                    "text": f"{action_emoji} Ambiente de Sandbox: {action}",
                 },
             },
             {
@@ -37,40 +45,34 @@ def send_slack_deploy_notification(action, source, status_code, payload):
                 "fields": [
                     {
                         "type": "mrkdwn",
-                        "text": f"*Aplicacao*\n{application_name}",
+                        "text": f"📦 *Aplicação:*\n{application_name}",
                     },
                     {
                         "type": "mrkdwn",
-                        "text": f"*Ambiente*\n{environment_name}",
+                        "text": f"🌐 *Ambiente:*\n{environment_name}",
                     },
                     {
                         "type": "mrkdwn",
-                        "text": f"*Acao*\n{action}",
+                        "text": f"⚙️ *Ação:*\n{action}",
                     },
                     {
                         "type": "mrkdwn",
-                        "text": f"*Origem*\n{source}",
+                        "text": f"🔗 *Origem:*\n{source}",
                     },
                     {
                         "type": "mrkdwn",
-                        "text": f"*Resultado*\n{status_label}",
+                        "text": f"⚡ *Status:*\n{status_label}",
                     },
                     {
                         "type": "mrkdwn",
                         "text": (
-                            "*Horario UTC*\n"
+                            "🕐 *Horário UTC*\n"
                             f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
                         ),
                     },
                 ],
             },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*Payload*\n```{payload or 'sem payload'}```",
-                },
-            },
+
         ],
     }
 
@@ -85,28 +87,23 @@ def send_slack_deploy_notification(action, source, status_code, payload):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Envia uma notificacao de teste para o webhook do Slack."
+        description="Envia uma notificação de teste para o webhook do Slack."
     )
     parser.add_argument(
         "--action",
         default="teste-manual",
-        help="Acao exibida na notificacao.",
+        help="Ação exibida na notificação.",
     )
     parser.add_argument(
         "--source",
         default="cli",
-        help="Origem exibida na notificacao.",
+        help="Origem exibida na notificação.",
     )
     parser.add_argument(
         "--status-code",
         type=int,
         default=200,
-        help="Status code exibido na notificacao.",
-    )
-    parser.add_argument(
-        "--payload",
-        default="Teste manual via linha de comando.",
-        help="Payload exibido na notificacao.",
+        help="Status code exibido na notificação.",
     )
     return parser.parse_args()
 
@@ -117,7 +114,6 @@ def main():
         action=args.action,
         source=args.source,
         status_code=args.status_code,
-        payload=args.payload,
     )
 
     if success:

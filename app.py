@@ -180,7 +180,7 @@ if option == "Dashboard":
                     st.error(f"Erro ao ligar ambiente: {payload}")
 
                 slack_sent, slack_error = send_slack_deploy_notification(
-                    action="iniciado",
+                    action="iniciando",
                     source="streamlit",
                     status_code=status_code,
                     payload=payload,
@@ -196,7 +196,7 @@ if option == "Dashboard":
                     st.error(f"Erro ao desligar ambiente: {payload}")
 
                 slack_sent, slack_error = send_slack_deploy_notification(
-                    action="parado",
+                    action="desligando",
                     source="streamlit",
                     status_code=status_code,
                     payload=payload,
