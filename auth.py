@@ -3,9 +3,11 @@ Módulo de autenticação com Supabase (email e senha)
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 from supabase import create_client, Client
 from supabase.lib.client_options import ClientOptions
 import base64
+import json
 import logging
 import os
 import requests as _requests
@@ -20,7 +22,11 @@ load_dotenv()
 # Configurações do Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+REDIRECT_URL = os.getenv("STREAMLIT_REDIRECT_URL", "http://localhost:8501")
 ICON_PATH = os.path.join(os.path.dirname(__file__), "icone_midiacode.png")
+AUTH_LOCAL_STORAGE_KEY = "ops_manager_auth_tokens_v1"
+AUTH_QUERY_ACCESS_TOKEN_KEY = "auth_access_token"
+AUTH_QUERY_REFRESH_TOKEN_KEY = "auth_refresh_token"
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("SUPABASE_URL e SUPABASE_KEY não configurados no .env")
@@ -116,6 +122,12 @@ def initialize_auth_session():
         st.session_state.auth_feedback = None
     if "auth_mode" not in st.session_state:
         st.session_state.auth_mode = "signin"
+    if "recovery_tokens" not in st.session_state:
+        st.session_state.recovery_tokens = None
+    if "show_reset_request" not in st.session_state:
+        st.session_state.show_reset_request = False
+    if "auth_tokens_from_query" not in st.session_state:
+        st.session_state.auth_tokens_from_query = None
     _log_auth(
         logging.DEBUG,
         "initialize_auth_session.done",
@@ -133,13 +145,501 @@ def get_login_logo_src() -> Optional[str]:
         return None
 
 
+def _normalize_query_param(value: Any) -> Optional[str]:
+    """Normaliza parâmetros de query para string não vazia."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        value = value[-1] if value else None
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _hydrate_recovery_tokens_from_hash() -> None:
+    """Converte hash de recuperação do Supabase em query params acessíveis no backend."""
+    components.html(
+        """
+        <script>
+        (function() {
+            const root = window.parent && window.parent !== window ? window.parent : window;
+            const hash = root.location.hash || "";
+            if (!hash || hash.length <= 1) {
+                return;
+            }
+
+            const hashParams = new URLSearchParams(hash.substring(1));
+            const accessToken = hashParams.get("access_token");
+            const refreshToken = hashParams.get("refresh_token");
+            const flowType = hashParams.get("type");
+
+            if (!accessToken || !refreshToken || flowType !== "recovery") {
+                return;
+            }
+
+            const target = new URL(root.location.href);
+            target.hash = "";
+            target.searchParams.set("recovery_access_token", accessToken);
+            target.searchParams.set("recovery_refresh_token", refreshToken);
+            target.searchParams.set("recovery_type", flowType);
+            root.location.replace(target.toString());
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def _capture_recovery_tokens_from_query() -> None:
+    """Lê tokens de recuperação da URL e persiste em sessão para troca de senha."""
+    query_params = st.query_params
+    recovery_type = _normalize_query_param(query_params.get("recovery_type"))
+    access_token = _normalize_query_param(query_params.get("recovery_access_token"))
+    refresh_token = _normalize_query_param(query_params.get("recovery_refresh_token"))
+
+    if recovery_type == "recovery" and access_token and refresh_token:
+        st.session_state.recovery_tokens = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        }
+        st.session_state.auth_mode = "signin"
+        st.session_state.auth_feedback = {
+            "type": "info",
+            "message": "Token de recuperação recebido. Defina sua nova senha abaixo.",
+        }
+        st.query_params.clear()
+        st.rerun()
+
+
+def _extract_session_tokens(session: Any) -> Optional[Dict[str, str]]:
+    """Extrai access/refresh token da sessão retornada pelo Supabase."""
+    if not session:
+        return None
+
+    if isinstance(session, dict):
+        access_token = session.get("access_token")
+        refresh_token = session.get("refresh_token")
+    else:
+        access_token = getattr(session, "access_token", None)
+        refresh_token = getattr(session, "refresh_token", None)
+
+    if not access_token or not refresh_token:
+        return None
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+    }
+
+
+def _persist_session_tokens_in_local_storage(session: Any) -> None:
+    """Persiste tokens da sessão no localStorage do navegador."""
+    tokens = _extract_session_tokens(session)
+    if not tokens:
+        return
+
+    payload = json.dumps(tokens)
+    payload_js = json.dumps(payload)
+    storage_key_js = json.dumps(AUTH_LOCAL_STORAGE_KEY)
+    components.html(
+        f"""
+        <script>
+        (function() {{
+            try {{
+                const root = window.parent && window.parent !== window ? window.parent : window;
+                const targets = [root, window];
+                for (const target of targets) {{
+                    try {{
+                        target.localStorage.setItem({storage_key_js}, {payload_js});
+                    }} catch (error) {{}}
+                    try {{
+                        target.sessionStorage.setItem({storage_key_js}, {payload_js});
+                    }} catch (error) {{}}
+                }}
+            }} catch (error) {{
+                // Mantém o fluxo de login funcional mesmo sem acesso ao storage.
+            }}
+        }})();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def _clear_session_tokens_from_local_storage() -> None:
+    """Remove tokens persistidos localmente no navegador."""
+    storage_key_js = json.dumps(AUTH_LOCAL_STORAGE_KEY)
+    components.html(
+        f"""
+        <script>
+        (function() {{
+            try {{
+                const root = window.parent && window.parent !== window ? window.parent : window;
+                const targets = [root, window];
+                for (const target of targets) {{
+                    try {{
+                        target.localStorage.removeItem({storage_key_js});
+                    }} catch (error) {{}}
+                    try {{
+                        target.sessionStorage.removeItem({storage_key_js});
+                    }} catch (error) {{}}
+                }}
+            }} catch (error) {{
+                // Não bloqueia o logout caso localStorage esteja indisponível.
+            }}
+        }})();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def _hydrate_auth_tokens_from_local_storage() -> None:
+    """Converte tokens do localStorage em query params consumíveis no backend."""
+    if st.session_state.get("authenticated"):
+        return
+
+    if st.session_state.get("auth_tokens_from_query"):
+        return
+
+    storage_key_js = json.dumps(AUTH_LOCAL_STORAGE_KEY)
+    components.html(
+        f"""
+        <script>
+        (function() {{
+            try {{
+                const root = window.parent && window.parent !== window ? window.parent : window;
+
+                const decodeJwtPayload = (token) => {{
+                    const parts = (token || "").split(".");
+                    if (parts.length < 2) return null;
+                    const normalized = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+                    const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+                    return JSON.parse(root.atob(padded));
+                }};
+
+                const target = new URL(root.location.href);
+                const hasAccess = !!target.searchParams.get("auth_access_token");
+                const hasRefresh = !!target.searchParams.get("auth_refresh_token");
+                if (hasAccess || hasRefresh) {{
+                    return;
+                }}
+
+                const readFromStorage = () => {{
+                    const targets = [root, window];
+                    for (const target of targets) {{
+                        try {{
+                            const value = target.localStorage.getItem({storage_key_js});
+                            if (value) return value;
+                        }} catch (error) {{}}
+                        try {{
+                            const value = target.sessionStorage.getItem({storage_key_js});
+                            if (value) return value;
+                        }} catch (error) {{}}
+                    }}
+                    return null;
+                }};
+
+                const payload = readFromStorage();
+                if (!payload) {{
+                    return;
+                }}
+
+                const parsed = JSON.parse(payload);
+                if (!parsed || !parsed.access_token || !parsed.refresh_token) {{
+                    return;
+                }}
+
+                target.searchParams.set("auth_access_token", parsed.access_token);
+                target.searchParams.set("auth_refresh_token", parsed.refresh_token);
+                root.location.replace(target.toString());
+            }} catch (error) {{
+                // Não interrompe renderização caso parsing/storage falhe.
+            }}
+        }})();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def _capture_auth_tokens_from_query() -> None:
+    """Captura tokens de auth vindos da URL e persiste temporariamente na sessão."""
+    query_params = st.query_params
+    access_token = _normalize_query_param(query_params.get(AUTH_QUERY_ACCESS_TOKEN_KEY))
+    refresh_token = _normalize_query_param(query_params.get(AUTH_QUERY_REFRESH_TOKEN_KEY))
+
+    if access_token and refresh_token:
+        incoming_tokens = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        }
+        if st.session_state.get("auth_tokens_from_query") != incoming_tokens:
+            st.session_state.auth_tokens_from_query = incoming_tokens
+            st.rerun()
+
+
+def _persist_session_tokens_in_query_params(session: Any) -> None:
+    """Mantém tokens na URL para restaurar sessão após refresh de página."""
+    tokens = _extract_session_tokens(session)
+    if not tokens:
+        return
+
+    current_access = _normalize_query_param(st.query_params.get(AUTH_QUERY_ACCESS_TOKEN_KEY))
+    current_refresh = _normalize_query_param(st.query_params.get(AUTH_QUERY_REFRESH_TOKEN_KEY))
+    if current_access == tokens["access_token"] and current_refresh == tokens["refresh_token"]:
+        return
+
+    st.query_params[AUTH_QUERY_ACCESS_TOKEN_KEY] = tokens["access_token"]
+    st.query_params[AUTH_QUERY_REFRESH_TOKEN_KEY] = tokens["refresh_token"]
+
+
+def _restore_session_from_local_storage_tokens() -> bool:
+    """Tenta restaurar sessão Supabase a partir de tokens capturados da URL."""
+    tokens = st.session_state.get("auth_tokens_from_query")
+    if not tokens:
+        return False
+
+    try:
+        client = get_supabase_client()
+        set_session_method = getattr(client.auth, "set_session", None)
+        if not callable(set_session_method):
+            raise RuntimeError("Método set_session não disponível no cliente Supabase")
+
+        response = set_session_method(
+            tokens["access_token"],
+            tokens["refresh_token"],
+        )
+        _set_authenticated_state(response)
+
+        if not st.session_state.authenticated:
+            _sync_authenticated_state_from_client(client)
+
+        if st.session_state.authenticated:
+            _persist_session_tokens_in_local_storage(st.session_state.session)
+            _log_auth(logging.INFO, "signin.session_restored_from_local_storage")
+            st.session_state.auth_tokens_from_query = None
+            return True
+
+        _log_auth(logging.WARNING, "signin.local_storage_restore_invalid_response")
+    except Exception as e:
+        _log_auth(
+            logging.WARNING,
+            "signin.local_storage_restore_error",
+            error=str(e),
+        )
+
+    st.session_state.auth_tokens_from_query = None
+    _clear_session_tokens_from_local_storage()
+    return False
+
+
+def request_password_reset(email: str) -> bool:
+    """Solicita envio do email de recuperação de senha."""
+    normalized_email = (email or "").strip().lower()
+    if not normalized_email:
+        st.session_state.auth_feedback = {
+            "type": "error",
+            "message": "Informe seu email para receber o link de recuperação.",
+        }
+        return False
+
+    try:
+        client = get_supabase_client()
+        reset_method = getattr(client.auth, "reset_password_for_email", None)
+        if callable(reset_method):
+            try:
+                reset_method(normalized_email, {"redirect_to": REDIRECT_URL})
+            except TypeError:
+                reset_method(
+                    {
+                        "email": normalized_email,
+                        "options": {"redirect_to": REDIRECT_URL},
+                    }
+                )
+        else:
+            legacy_method = getattr(client.auth, "reset_password_email", None)
+            if not callable(legacy_method):
+                raise RuntimeError("Método de reset de senha não disponível no cliente Supabase")
+            try:
+                legacy_method(normalized_email, {"redirect_to": REDIRECT_URL})
+            except TypeError:
+                legacy_method(
+                    {
+                        "email": normalized_email,
+                        "options": {"redirect_to": REDIRECT_URL},
+                    }
+                )
+
+        _log_auth(
+            logging.INFO,
+            "password_reset.requested",
+            user_email=_mask_email(normalized_email),
+        )
+        st.session_state.auth_feedback = {
+            "type": "success",
+            "message": (
+                "Enviamos um link para redefinição de senha. "
+                "Abra o email e clique no link para continuar no ambiente local."
+            ),
+        }
+        return True
+    except Exception as e:
+        error_msg = str(e).lower()
+        LOGGER.exception("Falha ao solicitar reset de senha")
+        _log_auth(
+            logging.ERROR,
+            "password_reset.request_error",
+            user_email=_mask_email(normalized_email),
+            error=str(e),
+        )
+        if "rate limit" in error_msg or "too many requests" in error_msg:
+            st.session_state.auth_feedback = {
+                "type": "warning",
+                "message": (
+                    "Você solicitou a recuperação muitas vezes seguidas. "
+                    "Por favor, aguarde alguns instantes e tente novamente."
+                ),
+            }
+        else:
+            st.session_state.auth_feedback = {
+                "type": "error",
+                "message": (
+                    "Não foi possível enviar o email de recuperação. "
+                    "Confirme se o redirect URL está permitido no Supabase."
+                ),
+            }
+        return False
+
+
+def complete_password_reset(new_password: str, confirm_password: str) -> bool:
+    """Conclui a troca de senha usando tokens de recuperação."""
+    recovery_tokens = st.session_state.get("recovery_tokens")
+    if not recovery_tokens:
+        st.session_state.auth_feedback = {
+            "type": "error",
+            "message": "Nenhum token de recuperação ativo. Solicite um novo email.",
+        }
+        return False
+
+    if not new_password or not confirm_password:
+        st.session_state.auth_feedback = {
+            "type": "error",
+            "message": "Preencha e confirme a nova senha.",
+        }
+        return False
+
+    if len(new_password) < 6:
+        st.session_state.auth_feedback = {
+            "type": "error",
+            "message": "A nova senha deve ter pelo menos 6 caracteres.",
+        }
+        return False
+
+    if new_password != confirm_password:
+        st.session_state.auth_feedback = {
+            "type": "error",
+            "message": "As senhas informadas não coincidem.",
+        }
+        return False
+
+    try:
+        client = get_supabase_client()
+        set_session_method = getattr(client.auth, "set_session", None)
+        if not callable(set_session_method):
+            raise RuntimeError("Método set_session não disponível no cliente Supabase")
+
+        set_session_method(
+            recovery_tokens["access_token"],
+            recovery_tokens["refresh_token"],
+        )
+
+        update_method = getattr(client.auth, "update_user", None)
+        if not callable(update_method):
+            raise RuntimeError("Método update_user não disponível no cliente Supabase")
+
+        update_method({"password": new_password})
+
+        st.session_state.recovery_tokens = None
+        st.session_state.auth_feedback = {
+            "type": "success",
+            "message": "Senha redefinida com sucesso. Faça login com a nova senha.",
+        }
+        logout()
+        return True
+    except Exception as e:
+        LOGGER.exception("Falha ao concluir reset de senha")
+        _log_auth(logging.ERROR, "password_reset.complete_error", error=str(e))
+        st.session_state.auth_feedback = {
+            "type": "error",
+            "message": "Não foi possível redefinir a senha. Solicite um novo link.",
+        }
+        return False
+
+
 def _set_authenticated_state(response: Any) -> None:
     """Atualiza a sessão local após autenticação bem-sucedida."""
-    st.session_state.session = getattr(response, "session", None)
-    st.session_state.user = getattr(response, "user", None)
+    session_obj = getattr(response, "session", None) if response is not None else None
+    user_obj = getattr(response, "user", None) if response is not None else None
+
+    if not user_obj and session_obj is not None:
+        user_obj = getattr(session_obj, "user", None)
+
+    if not session_obj and response is not None and hasattr(response, "access_token"):
+        session_obj = response
+        if not user_obj:
+            user_obj = getattr(response, "user", None)
+
+    st.session_state.session = session_obj
+    st.session_state.user = user_obj
     st.session_state.authenticated = bool(
         st.session_state.session and st.session_state.user
     )
+    if st.session_state.authenticated:
+        _persist_session_tokens_in_local_storage(st.session_state.session)
+        _persist_session_tokens_in_query_params(st.session_state.session)
+
+
+def _sync_authenticated_state_from_client(client: Client) -> bool:
+    """Sincroniza sessão e usuário usando métodos de leitura do cliente Supabase."""
+    session_obj = None
+    user_obj = None
+
+    try:
+        get_session_method = getattr(client.auth, "get_session", None)
+        if callable(get_session_method):
+            session_resp = get_session_method()
+            session_obj = getattr(session_resp, "session", None)
+            if session_obj is None and hasattr(session_resp, "access_token"):
+                session_obj = session_resp
+    except Exception as e:
+        _log_auth(logging.DEBUG, "signin.sync_get_session_error", error=str(e))
+
+    try:
+        get_user_method = getattr(client.auth, "get_user", None)
+        if callable(get_user_method):
+            user_resp = get_user_method()
+            user_obj = getattr(user_resp, "user", None)
+    except Exception as e:
+        _log_auth(logging.DEBUG, "signin.sync_get_user_error", error=str(e))
+
+    if not user_obj and session_obj is not None:
+        user_obj = getattr(session_obj, "user", None)
+
+    st.session_state.session = session_obj
+    st.session_state.user = user_obj
+    st.session_state.authenticated = bool(session_obj and user_obj)
+
+    if st.session_state.authenticated:
+        _persist_session_tokens_in_local_storage(session_obj)
+        _persist_session_tokens_in_query_params(session_obj)
+
+    return st.session_state.authenticated
 
 
 def sign_in_with_email_password(email: str, password: str) -> bool:
@@ -164,34 +664,68 @@ def sign_in_with_email_password(email: str, password: str) -> bool:
         _log_auth(logging.INFO, "signin.success", user_email=_mask_email(email))
         return True
     except Exception as e:
+        error_msg = str(e).lower()
         LOGGER.exception("Falha no login com email e senha")
         _log_auth(logging.ERROR, "signin.error", user_email=_mask_email(email), error=str(e))
-        st.session_state.auth_feedback = {
-            "type": "error",
-            "message": f"Falha ao entrar: {str(e)}",
-        }
+        if "rate limit" in error_msg or "too many requests" in error_msg:
+            st.session_state.auth_feedback = {
+                "type": "warning",
+                "message": (
+                    "Por motivo de segurança, o acesso foi bloqueado "
+                    "temporariamente (muitas tentativas). Tente novamente "
+                    "em alguns minutos."
+                ),
+            }
+        else:
+            st.session_state.auth_feedback = {
+                "type": "error",
+                "message": f"Falha ao entrar: {str(e)}",
+            }
         return False
 
 
 def sign_up_with_email_password(name: str, email: str, password: str) -> bool:
     """Cria conta Supabase via email e senha para solicitação de acesso."""
     try:
+        normalized_email = (email or "").strip().lower()
+        normalized_name = (name or "").strip() or None
         client = get_supabase_client()
         response = client.auth.sign_up(
             {
-                "email": email.strip().lower(),
+                "email": normalized_email,
                 "password": password,
                 "options": {
                     "data": {
-                        "name": (name or "").strip() or None,
+                        "name": normalized_name,
                     }
                 },
             }
         )
+        pending_record = ensure_pending_user_record_by_email(
+            client,
+            normalized_email,
+            normalized_name,
+        )
+        if not pending_record:
+            st.session_state.auth_feedback = {
+                "type": "warning",
+                "message": (
+                    "Conta criada, mas não foi possível concluir o registro "
+                    "de aprovação automaticamente. Faça login para tentar "
+                    "novamente ou contate o administrador."
+                ),
+            }
+            _log_auth(
+                logging.WARNING,
+                "signup.pending_record_missing",
+                user_email=_mask_email(normalized_email),
+            )
+            return True
+
         _log_auth(
             logging.INFO,
             "signup.success",
-            user_email=_mask_email(email),
+            user_email=_mask_email(normalized_email),
             has_session=bool(getattr(response, "session", None)),
         )
         st.session_state.auth_feedback = {
@@ -204,12 +738,23 @@ def sign_up_with_email_password(name: str, email: str, password: str) -> bool:
         }
         return True
     except Exception as e:
+        error_msg = str(e).lower()
         LOGGER.exception("Falha no cadastro com email e senha")
         _log_auth(logging.ERROR, "signup.error", user_email=_mask_email(email), error=str(e))
-        st.session_state.auth_feedback = {
-            "type": "error",
-            "message": f"Falha ao criar conta: {str(e)}",
-        }
+        if "rate limit" in error_msg or "too many requests" in error_msg:
+            st.session_state.auth_feedback = {
+                "type": "warning",
+                "message": (
+                    "Você excedeu o limite de criação de contas ou envio de "
+                    "emails deste serviço. Por favor aguarde um momento antes "
+                    "de tentar novamente."
+                ),
+            }
+        else:
+            st.session_state.auth_feedback = {
+                "type": "error",
+                "message": f"Falha ao criar conta: {str(e)}",
+            }
         return False
 
 
@@ -234,11 +779,39 @@ def check_session():
 
 def ensure_pending_user_record(client: Client, user: Any) -> Optional[Dict[str, Any]]:
     """Garante que o usuário autenticado exista na tabela authorized_users como pendente."""
+    user_name = None
+    user_metadata = getattr(user, "user_metadata", None)
+    if isinstance(user_metadata, dict):
+        user_name = user_metadata.get("name")
+
+    return ensure_pending_user_record_by_email(
+        client,
+        getattr(user, "email", None),
+        user_name,
+    )
+
+
+def ensure_pending_user_record_by_email(
+    client: Client,
+    email: Optional[str],
+    name: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Garante o registro pendente na authorized_users para o email informado."""
+    normalized_email = (email or "").strip().lower()
+    if not normalized_email:
+        _log_auth(
+            logging.WARNING,
+            "authorization.ensure_pending.invalid_email",
+        )
+        return None
+
+    normalized_name = (name or "").strip() or None
+
     try:
         response = (
             client.table("authorized_users")
             .select("id, approved")
-            .eq("email", user.email)
+            .eq("email", normalized_email)
             .execute()
         )
         existing_record = response.data[0] if response.data else None
@@ -246,40 +819,33 @@ def ensure_pending_user_record(client: Client, user: Any) -> Optional[Dict[str, 
             _log_auth(
                 logging.INFO,
                 "authorization.ensure_pending.already_exists",
-                user_email=_mask_email(user.email),
+                user_email=_mask_email(normalized_email),
                 approved=existing_record.get("approved", False),
             )
             return existing_record
 
-        user_name = None
-        user_metadata = getattr(user, "user_metadata", None)
-        if isinstance(user_metadata, dict):
-            user_name = user_metadata.get("name")
-
-        client.table("authorized_users").insert(
-            {
-                "email": user.email,
-                "name": user_name,
-                "approved": False,
-            }
-        ).execute()
+        client.table("authorized_users").insert({
+            "email": normalized_email,
+            "name": normalized_name,
+            "approved": False,
+        }).execute()
         _log_auth(
             logging.INFO,
             "authorization.ensure_pending.inserted",
-            user_email=_mask_email(user.email),
+            user_email=_mask_email(normalized_email),
         )
 
         response = (
             client.table("authorized_users")
             .select("id, approved")
-            .eq("email", user.email)
+            .eq("email", normalized_email)
             .execute()
         )
         ensured_record = response.data[0] if response.data else None
         _log_auth(
             logging.INFO,
             "authorization.ensure_pending.recheck",
-            user_email=_mask_email(user.email),
+            user_email=_mask_email(normalized_email),
             found=bool(ensured_record),
         )
         return ensured_record
@@ -288,13 +854,13 @@ def ensure_pending_user_record(client: Client, user: Any) -> Optional[Dict[str, 
         _log_auth(
             logging.ERROR,
             "authorization.ensure_pending.error",
-            user_email=_mask_email(getattr(user, "email", None)),
+            user_email=_mask_email(normalized_email),
             error=str(e),
         )
         return None
 
 
-def logout():
+def logout(should_rerun: bool = True):
     """Realiza logout do usuário"""
     try:
         masked_email = _mask_email(
@@ -315,9 +881,15 @@ def logout():
         st.session_state.user = None
         st.session_state.authenticated = False
         st.session_state.user_id = None
+        st.session_state.auth_tokens_from_query = None
         st.session_state._supabase_auth_storage = {}
+        for key in (AUTH_QUERY_ACCESS_TOKEN_KEY, AUTH_QUERY_REFRESH_TOKEN_KEY):
+            if key in st.query_params:
+                del st.query_params[key]
+        _clear_session_tokens_from_local_storage()
         _log_auth(logging.INFO, "logout.done")
-        st.rerun()
+        if should_rerun:
+            st.rerun()
     except Exception as e:
         LOGGER.exception("Erro ao fazer logout")
         _log_auth(logging.ERROR, "logout.error", error=str(e))
@@ -624,6 +1196,22 @@ def apply_login_theme():
             text-decoration: underline;
         }
 
+        .login-inline-link {
+            margin-top: 8px;
+            font-size: 13px;
+            text-align: left;
+        }
+
+        .login-inline-link a {
+            color: #0067ff;
+            text-decoration: none;
+            font-weight: 700;
+        }
+
+        .login-inline-link a:hover {
+            text-decoration: underline;
+        }
+
         .info-text {
             font-size: 12px;
             color: #999;
@@ -768,12 +1356,20 @@ def display_auth_ui():
     """
     _log_auth(logging.DEBUG, "display_auth_ui.start")
     initialize_auth_session()
+    _hydrate_recovery_tokens_from_hash()
+    _capture_recovery_tokens_from_query()
+    _capture_auth_tokens_from_query()
+    _restore_session_from_local_storage_tokens()
+    _hydrate_auth_tokens_from_local_storage()
 
     requested_mode = st.query_params.get("auth_mode")
     if isinstance(requested_mode, list):
         requested_mode = requested_mode[-1] if requested_mode else None
-    if requested_mode in {"signin", "signup"}:
+    if requested_mode in {"signin", "signup", "reset"}:
         st.session_state.auth_mode = requested_mode
+        if "auth_mode" in st.query_params:
+            del st.query_params["auth_mode"]
+        st.rerun()
 
     def _render_feedback() -> None:
         feedback = st.session_state.get("auth_feedback")
@@ -835,7 +1431,70 @@ def display_auth_ui():
                     unsafe_allow_html=True,
                 )
 
-                if not is_signup_mode:
+                if st.session_state.get("recovery_tokens"):
+                    st.markdown(
+                        "<p class='login-tab-caption'>Defina sua nova senha para concluir "
+                        "a recuperação de acesso.</p>",
+                        unsafe_allow_html=True,
+                    )
+                    with st.form("password_reset_form", clear_on_submit=False):
+                        new_password = st.text_input(
+                            "Nova senha",
+                            type="password",
+                            key="recovery_new_password",
+                            placeholder="Digite sua nova senha",
+                        )
+                        confirm_new_password = st.text_input(
+                            "Confirmar nova senha",
+                            type="password",
+                            key="recovery_confirm_password",
+                            placeholder="Repita a nova senha",
+                        )
+                        reset_submit = st.form_submit_button(
+                            "Atualizar senha",
+                            type="primary",
+                            use_container_width=True,
+                        )
+
+                    if reset_submit:
+                        complete_password_reset(new_password, confirm_new_password)
+
+                    render_html_block(
+                        "<div class='login-switch-row'>Lembrou sua senha?"
+                        " <a href='?auth_mode=signin' target='_self'>Voltar ao login</a>"
+                        "</div>"
+                    )
+
+                elif auth_mode == "reset":
+                    st.markdown(
+                        "<p class='login-tab-caption'>Informe seu email para receber "
+                        "o link de recuperação de senha.</p>",
+                        unsafe_allow_html=True,
+                    )
+                    with st.form("reset_form", clear_on_submit=False):
+                        reset_email = st.text_input(
+                            "Email",
+                            key="reset_email",
+                            placeholder="voce@empresa.com",
+                        )
+                        reset_submit = st.form_submit_button(
+                            "Enviar link de recuperação",
+                            type="primary",
+                            use_container_width=True,
+                        )
+
+                    if reset_submit:
+                        if request_password_reset(reset_email):
+                            st.session_state.auth_mode = "signin"
+                            st.rerun()
+
+                    render_html_block(
+                        "<div class='login-switch-row'>Lembrou sua senha?"
+                        " <a href='?auth_mode=signin' target='_self'>Voltar ao login</a>"
+                        "</div>"
+                    )
+
+                elif auth_mode == "signin" or not is_signup_mode:
                     st.markdown(
                         "<p class='login-tab-caption'>Use seu email e senha para "
                         "acessar o painel operacional.</p>",
@@ -864,6 +1523,13 @@ def display_auth_ui():
                             st.error("Preencha email e senha para entrar.")
                         elif sign_in_with_email_password(signin_email, signin_password):
                             st.rerun()
+
+                    render_html_block(
+                        "<div class='login-inline-link'>"
+                        "<a href='?auth_mode=reset' target='_self'>"
+                        "Esqueci minha senha"
+                        "</a></div>"
+                    )
 
                     render_html_block(
                         "<div class='login-switch-row'>Não tem acesso ainda?"
@@ -944,6 +1610,10 @@ def display_auth_ui():
 
         if user:
             try:
+                # Reforça tokens na URL também nas subpáginas, evitando novo login no refresh.
+                if st.session_state.get("session"):
+                    _persist_session_tokens_in_query_params(st.session_state.session)
+
                 _log_auth(
                     logging.INFO,
                     "display_auth_ui.authenticated",
@@ -1160,6 +1830,7 @@ def render_sidebar():
                 key="sidebar_logout",
                 use_container_width=True,
                 on_click=logout,
+                kwargs={"should_rerun": False},
             )
 
 
