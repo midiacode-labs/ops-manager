@@ -190,6 +190,36 @@ python3 stop_dev_environment.py
 
 Este script invoca uma função Lambda da AWS para parar o ambiente de desenvolvimento e fornece feedback sobre o status da operação.
 
+### Relatório de Evidências de Backups
+
+Para coletar evidências dos últimos backups disponíveis por recurso (iniciando por OpenSearch):
+
+```bash
+python3 backup_evidence_report.py
+```
+
+O script gera por padrão o arquivo `backup_evidence_report.json` com:
+
+- lista de recursos monitorados (tipo + ARN)
+- último backup encontrado por recurso
+- amostra dos recovery points retornados pela AWS CLI
+- resumo consolidado da coleta
+
+Para incluir mais recursos, por exemplo RDS e DynamoDB:
+
+```bash
+python3 backup_evidence_report.py \
+   --add-resource rds arn:aws:rds:us-east-1:578416043364:db:meu-banco \
+   --add-resource dynamodb arn:aws:dynamodb:us-east-1:578416043364:table/minha-tabela
+```
+
+Parâmetros úteis:
+
+- `--region us-east-1`
+- `--profile meu-profile`
+- `--output relatorio_backups.json`
+- `--max-recovery-points 20`
+
 ## Estrutura do Projeto
 
 - `app.py` - O arquivo principal da aplicação Streamlit

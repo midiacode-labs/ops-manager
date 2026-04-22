@@ -1,0 +1,70 @@
+{
+  "generated_at": "2026-04-22T10:52:11.171723+00:00",
+  "region": "us-east-1",
+  "resources": [
+    {
+      "resource_type": "opensearch",
+      "resource_arn": "arn:aws:es:us-east-1:578416043364:domain/search-service"
+    }
+  ],
+  "reports": [
+    {
+      "resource_type": "opensearch",
+      "resource_arn": "arn:aws:es:us-east-1:578416043364:domain/search-service",
+      "collected_at": "2026-04-22T10:52:08.881492+00:00",
+      "status": "ok",
+      "backup_service": "opensearch_managed_snapshots",
+      "collection_strategy": "opensearch_cloudwatch",
+      "latest_backup": {
+        "source": "cloudwatch_automated_snapshot_metric",
+        "timestamp": "2026-04-21T10:52:00+00:00",
+        "status": "ok",
+        "metric_value": 0.0,
+        "unit": "Count"
+      },
+      "alternative_snapshot_evidence": {
+        "status": "collected",
+        "source": "cloudwatch_automated_snapshot_metric",
+        "domain_status": {
+          "domain_name": "search-service",
+          "engine_version": "OpenSearch_2.19",
+          "processing": false,
+          "created": true,
+          "deleted": false,
+          "endpoint": "search-search-service-yfyem2q7nb5aokix52diwkik6y.us-east-1.es.amazonaws.com",
+          "arn": "arn:aws:es:us-east-1:578416043364:domain/search-service"
+        },
+        "domain_error": null,
+        "metric": {
+          "namespace": "AWS/ES",
+          "metric_name": "AutomatedSnapshotFailure",
+          "dimensions": {
+            "DomainName": "search-service",
+            "ClientId": "578416043364"
+          },
+          "window_days": 14,
+          "latest_datapoint": {
+            "Timestamp": "2026-04-21T10:52:00+00:00",
+            "Maximum": 0.0,
+            "Unit": "Count"
+          },
+          "snapshot_health": "ok",
+          "error": null
+        },
+        "commands": {
+          "describe_domain": "aws opensearch describe-domain --domain-name search-service --region us-east-1 --output json",
+          "get_metric_statistics": "aws cloudwatch get-metric-statistics --namespace AWS/ES --metric-name AutomatedSnapshotFailure --dimensions Name=DomainName,Value=search-service Name=ClientId,Value=578416043364 --start-time 2026-04-08T10:52:10+00:00 --end-time 2026-04-22T10:52:10+00:00 --period 86400 --statistics Maximum --region us-east-1 --output json"
+        },
+        "collected_at": "2026-04-22T10:52:11.171693+00:00"
+      },
+      "note": "OpenSearch não usa AWS Backup para este tipo de ARN. As evidências foram coletadas por OpenSearch/CloudWatch."
+    }
+  ],
+  "summary": {
+    "total_resources": 1,
+    "resources_with_backup": 1,
+    "resources_without_backup": 0,
+    "resources_not_supported_by_aws_backup": 0,
+    "resources_with_error": 0
+  }
+}
