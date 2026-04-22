@@ -426,6 +426,68 @@ def check_session():
         return False
 
 
+def ensure_pending_user_record(client: Client, user: Any) -> Optional[Dict[str, Any]]:
+    """Garante que o usuário autenticado exista na tabela authorized_users como pendente."""
+    try:
+        response = (
+            client.table("authorized_users")
+            .select("id, approved")
+            .eq("email", user.email)
+            .execute()
+        )
+        existing_record = response.data[0] if response.data else None
+        if existing_record:
+            _log_auth(
+                logging.INFO,
+                "authorization.ensure_pending.already_exists",
+                user_email=_mask_email(user.email),
+                approved=existing_record.get("approved", False),
+            )
+            return existing_record
+
+        user_name = None
+        user_metadata = getattr(user, "user_metadata", None)
+        if isinstance(user_metadata, dict):
+            user_name = user_metadata.get("name")
+
+        client.table("authorized_users").insert(
+            {
+                "email": user.email,
+                "name": user_name,
+                "approved": False,
+            }
+        ).execute()
+        _log_auth(
+            logging.INFO,
+            "authorization.ensure_pending.inserted",
+            user_email=_mask_email(user.email),
+        )
+
+        response = (
+            client.table("authorized_users")
+            .select("id, approved")
+            .eq("email", user.email)
+            .execute()
+        )
+        ensured_record = response.data[0] if response.data else None
+        _log_auth(
+            logging.INFO,
+            "authorization.ensure_pending.recheck",
+            user_email=_mask_email(user.email),
+            found=bool(ensured_record),
+        )
+        return ensured_record
+    except Exception as e:
+        LOGGER.exception("Erro ao registrar usuário pendente")
+        _log_auth(
+            logging.ERROR,
+            "authorization.ensure_pending.error",
+            user_email=_mask_email(getattr(user, "email", None)),
+            error=str(e),
+        )
+        return None
+
+
 def logout():
     """Realiza logout do usuário"""
     try:
@@ -734,6 +796,41 @@ def display_auth_ui():
                 
                 # Usuário não encontrado na tabela
                 if not authorized_record:
+                    authorized_record = ensure_pending_user_record(client, user)
+
+                if not authorized_record:
+                    _log_auth(
+                        logging.WARNING,
+                        "display_auth_ui.authorization_pending_registration_failed",
+                        user_email=_mask_email(user.email),
+                    )
+                    apply_login_theme()
+                    render_html_block(f"""
+                    <div class="login-container">
+                        <div class="login-box">
+                            <div style="font-size: 48px; margin-bottom: 20px;">⏳</div>
+                            <h1 style="color: #ff9800; margin-bottom: 20px;">Acesso Pendente</h1>
+                            <p style="font-size: 15px; line-height: 1.6; margin-bottom: 30px;">
+                                Sua autenticação foi concluída, mas não foi possível registrar sua solicitação de acesso automaticamente.
+                                <br><br>
+                                <strong>{user.email}</strong>
+                                <br><br>
+                                Tente novamente em instantes ou contate o administrador para concluir o cadastro manualmente.
+                            </p>
+                            <div class="divider"></div>
+                        </div>
+                    </div>
+                    """)
+                    
+                    col1, col2, col3 = st.columns([1, 1, 1])
+                    with col2:
+                        if st.button("🚪 Fazer Logout", key="logout_unauthorized", use_container_width=True):
+                            logout()
+                    
+                    st.stop()
+
+                # Se foi criado/identificado como pendente, bloqueia até aprovação.
+                if not authorized_record.get("approved", False):
                     _log_auth(
                         logging.WARNING,
                         "display_auth_ui.authorization_pending",
@@ -749,51 +846,17 @@ def display_auth_ui():
                                 Seu email foi registrado com sucesso, mas aguarda aprovação do administrador.
                                 <br><br>
                                 <strong>{user.email}</strong>
-                                <br><br>
-                                Você será notificado assim que tiver acesso liberado.
                             </p>
                             <div class="divider"></div>
                         </div>
                     </div>
                     """)
-                    
+
                     col1, col2, col3 = st.columns([1, 1, 1])
                     with col2:
                         if st.button("🚪 Fazer Logout", key="logout_unauthorized", use_container_width=True):
                             logout()
-                    
-                    st.stop()
-                
-                # Usuário não aprovado
-                if not authorized_record.get("approved", False):
-                    _log_auth(
-                        logging.WARNING,
-                        "display_auth_ui.authorization_not_approved",
-                        user_email=_mask_email(user.email),
-                    )
-                    apply_login_theme()
-                    render_html_block(f"""
-                    <div class="login-container">
-                        <div class="login-box">
-                            <div style="font-size: 48px; margin-bottom: 20px;">⏳</div>
-                            <h1 style="color: #ff9800; margin-bottom: 20px;">Acesso em Revisão</h1>
-                            <p style="font-size: 15px; line-height: 1.6; margin-bottom: 30px;">
-                                Sua conta foi criada com sucesso, mas precisa ser aprovada pelo administrador.
-                                <br><br>
-                                <strong>{user.email}</strong>
-                                <br><br>
-                                Você será notificado assim que o acesso for liberado.
-                            </p>
-                            <div class="divider"></div>
-                        </div>
-                    </div>
-                    """)
-                    
-                    col1, col2, col3 = st.columns([1, 1, 1])
-                    with col2:
-                        if st.button("🚪 Fazer Logout", key="logout_pending", use_container_width=True):
-                            logout()
-                    
+
                     st.stop()
                 
                 # Salvar ID do usuário na sessão para uso posterior
