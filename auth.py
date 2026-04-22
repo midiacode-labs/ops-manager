@@ -6,12 +6,15 @@ import streamlit as st
 from supabase import create_client, Client
 from supabase.lib.client_options import ClientOptions
 import base64
+import logging
 import os
 import requests as _requests
+import time
 from typing import Optional, Dict, Any
 from datetime import datetime
 from dotenv import load_dotenv
-from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse, unquote_plus
+from uuid import uuid4
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -26,8 +29,106 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("SUPABASE_URL e SUPABASE_KEY não configurados no .env")
 
 
+LOGGER = logging.getLogger("ops_manager.auth")
+if not LOGGER.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+        )
+    )
+    LOGGER.addHandler(_handler)
+LOGGER.setLevel(os.getenv("AUTH_LOG_LEVEL", "INFO").upper())
+LOGGER.propagate = False
+
+
+# Fallback de PKCE para casos em que o Streamlit troca a sessão no retorno OAuth.
+PKCE_FALLBACK_TTL_SECONDS = 600
+PKCE_FALLBACK_MAX_ITEMS = 20
+_pkce_fallback_verifiers: list[dict[str, Any]] = []
+
+
+def _get_auth_trace_id() -> str:
+    """Retorna um identificador de correlação por sessão do Streamlit."""
+    if "auth_trace_id" not in st.session_state:
+        st.session_state.auth_trace_id = uuid4().hex[:12]
+    return st.session_state.auth_trace_id
+
+
+def _mask_email(email: Optional[str]) -> Optional[str]:
+    """Mascara email para logs sem expor PII completa."""
+    if not email or "@" not in email:
+        return email
+    local, domain = email.split("@", 1)
+    if len(local) <= 2:
+        masked_local = "*" * len(local)
+    else:
+        masked_local = f"{local[0]}{'*' * (len(local) - 2)}{local[-1]}"
+    return f"{masked_local}@{domain}"
+
+
+def _log_auth(level: int, event: str, **fields: Any) -> None:
+    """Log estruturado do fluxo de autenticação."""
+    base_fields = {
+        "event": event,
+        "trace_id": _get_auth_trace_id(),
+        "authenticated": st.session_state.get("authenticated", False),
+        "has_session": bool(st.session_state.get("session")),
+    }
+    base_fields.update(fields)
+    payload = " ".join(f"{k}={v}" for k, v in base_fields.items())
+    LOGGER.log(level, payload)
+
+
+def _cleanup_pkce_fallback_cache() -> None:
+    """Remove verifiers de fallback expirados ou excedentes."""
+    now = time.time()
+    valid = [
+        item
+        for item in _pkce_fallback_verifiers
+        if now - item.get("created_at", 0) <= PKCE_FALLBACK_TTL_SECONDS
+    ]
+    if len(valid) > PKCE_FALLBACK_MAX_ITEMS:
+        valid = valid[-PKCE_FALLBACK_MAX_ITEMS:]
+    _pkce_fallback_verifiers.clear()
+    _pkce_fallback_verifiers.extend(valid)
+
+
+def _store_pkce_fallback_verifier(code_verifier: str) -> None:
+    """Armazena verifier em cache de processo para fallback de callback OAuth."""
+    _cleanup_pkce_fallback_cache()
+    _pkce_fallback_verifiers.append(
+        {
+            "code_verifier": code_verifier,
+            "created_at": time.time(),
+            "trace_id": _get_auth_trace_id(),
+        }
+    )
+    _log_auth(
+        logging.DEBUG,
+        "pkce_fallback_cache.store",
+        cache_size=len(_pkce_fallback_verifiers),
+    )
+
+
+def _consume_pkce_fallback_verifier() -> Optional[str]:
+    """Obtém o verifier mais recente do cache de fallback."""
+    _cleanup_pkce_fallback_cache()
+    if not _pkce_fallback_verifiers:
+        return None
+    item = _pkce_fallback_verifiers.pop()
+    _log_auth(
+        logging.WARNING,
+        "pkce_fallback_cache.consume",
+        source_trace_id=item.get("trace_id"),
+        cache_size=len(_pkce_fallback_verifiers),
+    )
+    return _normalize_query_param(item.get("code_verifier"))
+
+
 def get_supabase_client() -> Client:
     """Retorna uma instância do cliente Supabase"""
+    _log_auth(logging.DEBUG, "get_supabase_client")
     return create_client(
         SUPABASE_URL,
         SUPABASE_KEY,
@@ -57,6 +158,7 @@ class StreamlitSessionStorage:
 
 def initialize_auth_session():
     """Inicializa as variáveis de sessão necessárias para autenticação"""
+    _log_auth(logging.DEBUG, "initialize_auth_session.start")
     if "session" not in st.session_state:
         st.session_state.session = None
     if "user" not in st.session_state:
@@ -65,11 +167,22 @@ def initialize_auth_session():
         st.session_state.authenticated = False
     if "_supabase_auth_storage" not in st.session_state:
         st.session_state._supabase_auth_storage = {}
+    if "auth_callback_error" not in st.session_state:
+        st.session_state.auth_callback_error = None
+    if "pending_pkce_code_verifier" not in st.session_state:
+        st.session_state.pending_pkce_code_verifier = None
+    _log_auth(
+        logging.DEBUG,
+        "initialize_auth_session.done",
+        has_auth_callback_error=bool(st.session_state.get("auth_callback_error")),
+        has_pending_pkce=bool(st.session_state.get("pending_pkce_code_verifier")),
+    )
 
 
 def get_google_oauth_url() -> str:
     """Gera a URL de login do Google através do Supabase"""
     try:
+        _log_auth(logging.INFO, "oauth_url_generation.start", redirect_to=REDIRECT_URL)
         client = get_supabase_client()
         redirect_to = REDIRECT_URL
         response = client.auth.sign_in_with_oauth(
@@ -84,7 +197,15 @@ def get_google_oauth_url() -> str:
         code_verifier = client.auth._storage.get_item(
             f"{client.auth._storage_key}-code-verifier"
         )
+        if code_verifier:
+            st.session_state.pending_pkce_code_verifier = code_verifier
+            _store_pkce_fallback_verifier(code_verifier)
+            _log_auth(logging.INFO, "oauth_url_generation.pkce_verifier_stored")
+        else:
+            _log_auth(logging.WARNING, "oauth_url_generation.pkce_verifier_missing")
+
         if response and response.url and code_verifier:
+            _log_auth(logging.INFO, "oauth_url_generation.success", has_response_url=True)
             return append_query_params(
                 response.url,
                 {
@@ -94,8 +215,16 @@ def get_google_oauth_url() -> str:
                     )
                 },
             )
+        _log_auth(
+            logging.WARNING,
+            "oauth_url_generation.partial",
+            has_response=bool(response),
+            has_response_url=bool(response and response.url),
+        )
         return response.url if response else None
     except Exception as e:
+        LOGGER.exception("Falha ao gerar URL OAuth")
+        _log_auth(logging.ERROR, "oauth_url_generation.error", error=str(e))
         st.error(f"Erro ao gerar URL de login: {str(e)}")
         return None
 
@@ -108,6 +237,18 @@ def append_query_params(url: str, extra_params: Dict[str, str]) -> str:
     return urlunparse(
         parsed_url._replace(query=urlencode(query_params))
     )
+
+
+def _normalize_query_param(value: Any) -> Optional[str]:
+    """Normaliza parâmetros de query do Streamlit para string não vazia."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        value = value[-1] if value else None
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
 
 
 def get_login_logo_src() -> Optional[str]:
@@ -140,32 +281,130 @@ def handle_auth_callback():
     Deve ser chamado na URL com parâmetro code
     """
     query_params = st.query_params
+    query_keys = sorted(list(query_params.keys()))
+    _log_auth(logging.INFO, "auth_callback.received", query_keys=query_keys)
     
-    if "code" in query_params:
+    code = _normalize_query_param(query_params.get("code"))
+    if code:
         try:
+            _log_auth(logging.INFO, "auth_callback.code_found", code_length=len(code))
             client = get_supabase_client()
-            code = query_params["code"]
-            code_verifier = query_params.get("pkce_code_verifier")
+            code_verifier = _normalize_query_param(
+                query_params.get("pkce_code_verifier")
+            )
+            verifier_source = "query"
+
+            if not code_verifier:
+                code_verifier = _normalize_query_param(
+                    st.session_state.get("pending_pkce_code_verifier")
+                )
+                verifier_source = "session"
+
+            if not code_verifier:
+                code_verifier = _normalize_query_param(
+                    client.auth._storage.get_item(
+                        f"{client.auth._storage_key}-code-verifier"
+                    )
+                )
+                verifier_source = "storage"
+
+            if not code_verifier:
+                code_verifier = _consume_pkce_fallback_verifier()
+                verifier_source = "process_fallback"
+
+            _log_auth(
+                logging.INFO,
+                "auth_callback.verifier_lookup",
+                verifier_source=verifier_source,
+                has_code_verifier=bool(code_verifier),
+            )
+
+            if not code_verifier:
+                _log_auth(logging.ERROR, "auth_callback.verifier_missing")
+                st.session_state.auth_callback_error = (
+                    "Falha ao concluir o login com Google. "
+                    "O verificador de segurança (PKCE) não foi encontrado no retorno. "
+                    "Clique em 'Continuar com Google' novamente para gerar um novo login."
+                )
+                st.query_params.clear()
+                st.rerun()
             
             # Troca o código por uma sessão
-            response = client.auth.exchange_code_for_session(
-                {
-                    "auth_code": code,
-                    "code_verifier": code_verifier,
-                }
-            )
+            exchange_payload = {
+                "auth_code": code,
+                "code_verifier": code_verifier,
+            }
+
+            _log_auth(logging.INFO, "auth_callback.exchange.start")
+
+            response = client.auth.exchange_code_for_session(exchange_payload)
             
             if response:
+                masked_email = _mask_email(getattr(response.user, "email", None))
+                _log_auth(
+                    logging.INFO,
+                    "auth_callback.exchange.success",
+                    user_email=masked_email,
+                )
                 st.session_state.session = response.session
                 st.session_state.user = response.user
                 st.session_state.authenticated = True
+                st.session_state.auth_callback_error = None
+                st.session_state.pending_pkce_code_verifier = None
                 
                 # Limpar parâmetros de query
                 st.query_params.clear()
                 st.rerun()
+            else:
+                _log_auth(logging.ERROR, "auth_callback.exchange.empty_response")
+                st.session_state.auth_callback_error = (
+                    "Não foi possível finalizar a autenticação. Tente novamente em instantes."
+                )
+                st.query_params.clear()
+                st.rerun()
                 
         except Exception as e:
-            st.error(f"Erro ao processar autenticação: {str(e)}")
+            LOGGER.exception("Falha ao processar callback OAuth")
+            _log_auth(logging.ERROR, "auth_callback.exchange.error", error=str(e))
+            st.session_state.auth_callback_error = (
+                "Falha ao processar o retorno do login. "
+                f"Detalhes técnicos: {str(e)}"
+            )
+            st.query_params.clear()
+            st.rerun()
+
+    if "error" in query_params:
+        error = query_params.get("error")
+        error_code = query_params.get("error_code")
+        raw_description = query_params.get("error_description", "")
+        error_description = unquote_plus(raw_description) if raw_description else ""
+        _log_auth(
+            logging.WARNING,
+            "auth_callback.provider_error",
+            error=error,
+            error_code=error_code,
+            has_error_description=bool(error_description),
+        )
+
+        if error_code == "signup_disabled":
+            st.session_state.auth_callback_error = (
+                "Seu acesso ainda não está liberado. Esta aplicação permite apenas usuários "
+                "previamente autorizados. Solicite aprovação ao administrador e tente novamente."
+            )
+        elif error == "access_denied":
+            st.session_state.auth_callback_error = (
+                "Não foi possível concluir o login porque o acesso foi negado "
+                "pelo provedor de autenticação."
+            )
+        else:
+            st.session_state.auth_callback_error = (
+                "Não foi possível concluir o login no momento. "
+                f"Detalhes: {error_description or 'erro desconhecido.'}"
+            )
+
+        # Limpa os parâmetros para evitar repetir o mesmo erro no próximo rerun.
+        st.query_params.clear()
+        st.rerun()
 
 
 def check_session():
@@ -176,9 +415,13 @@ def check_session():
     try:
         # Verificar se há dados de sessão no st.session_state
         if st.session_state.authenticated and st.session_state.session:
+            _log_auth(logging.DEBUG, "check_session.valid")
             return True
+        _log_auth(logging.DEBUG, "check_session.invalid")
         return False
     except Exception as e:
+        LOGGER.exception("Erro ao verificar sessão")
+        _log_auth(logging.ERROR, "check_session.error", error=str(e))
         st.error(f"Erro ao verificar sessão: {str(e)}")
         return False
 
@@ -186,16 +429,30 @@ def check_session():
 def logout():
     """Realiza logout do usuário"""
     try:
+        masked_email = _mask_email(
+            getattr(st.session_state.get("user"), "email", None)
+            if st.session_state.get("user")
+            else None
+        )
+        _log_auth(logging.INFO, "logout.start", user_email=masked_email)
         if st.session_state.session:
             client = get_supabase_client()
             client.auth.sign_out()
+            _log_auth(logging.INFO, "logout.supabase_signout.success")
+        else:
+            _log_auth(logging.INFO, "logout.no_session")
         
         # Limpar sessão
         st.session_state.session = None
         st.session_state.user = None
         st.session_state.authenticated = False
+        st.session_state.auth_callback_error = None
+        st.session_state.pending_pkce_code_verifier = None
+        _log_auth(logging.INFO, "logout.done")
         st.rerun()
     except Exception as e:
+        LOGGER.exception("Erro ao fazer logout")
+        _log_auth(logging.ERROR, "logout.error", error=str(e))
         st.error(f"Erro ao fazer logout: {str(e)}")
 
 
@@ -379,6 +636,7 @@ def display_auth_ui():
     Exibe a interface de autenticação com verificação de autorização no banco
     Deve ser chamada no início do app
     """
+    _log_auth(logging.DEBUG, "display_auth_ui.start")
     initialize_auth_session()
     
     # Processar callback de autenticação
@@ -386,10 +644,24 @@ def display_auth_ui():
     
     # Verificar sessão existente
     if not check_session():
+        _log_auth(logging.INFO, "display_auth_ui.not_authenticated")
         # Aplicar tema de login
         apply_login_theme()
 
+        auth_callback_error = st.session_state.get("auth_callback_error")
+        callback_error_markup = (
+            f"""
+            <div style="background:#fff4e5;border:1px solid #ffd8a8;color:#7a4b00;
+            border-radius:10px;padding:12px 14px;margin:0 0 18px 0;font-size:14px;line-height:1.5;">
+                <strong>⚠️ Atenção:</strong><br>{auth_callback_error}
+            </div>
+            """
+            if auth_callback_error
+            else ""
+        )
+
         oauth_url = get_google_oauth_url()
+        _log_auth(logging.INFO, "display_auth_ui.login_screen", has_oauth_url=bool(oauth_url))
         logo_src = get_login_logo_src()
         google_icon_src = get_google_icon_src()
         login_action = (
@@ -420,6 +692,7 @@ def display_auth_ui():
                         <h1>Ops Manager</h1>
                         <p>Bem-vindo ao seu painel operacional<br>Faça login para continuar</p>
                     </div>
+                    {callback_error_markup}
                     <div class="divider"></div>
                     {login_action}
                     <div class="info-text">
@@ -440,6 +713,11 @@ def display_auth_ui():
         
         if user:
             try:
+                _log_auth(
+                    logging.INFO,
+                    "display_auth_ui.authenticated",
+                    user_email=_mask_email(user.email),
+                )
                 client = get_supabase_client()
                 
                 # Verificar se o usuário está na tabela authorized_users
@@ -448,9 +726,19 @@ def display_auth_ui():
                 ).execute()
                 
                 authorized_record = response.data[0] if response.data else None
+                _log_auth(
+                    logging.INFO,
+                    "display_auth_ui.authorization_lookup",
+                    found=bool(authorized_record),
+                )
                 
                 # Usuário não encontrado na tabela
                 if not authorized_record:
+                    _log_auth(
+                        logging.WARNING,
+                        "display_auth_ui.authorization_pending",
+                        user_email=_mask_email(user.email),
+                    )
                     apply_login_theme()
                     render_html_block(f"""
                     <div class="login-container">
@@ -478,6 +766,11 @@ def display_auth_ui():
                 
                 # Usuário não aprovado
                 if not authorized_record.get("approved", False):
+                    _log_auth(
+                        logging.WARNING,
+                        "display_auth_ui.authorization_not_approved",
+                        user_email=_mask_email(user.email),
+                    )
                     apply_login_theme()
                     render_html_block(f"""
                     <div class="login-container">
@@ -505,16 +798,24 @@ def display_auth_ui():
                 
                 # Salvar ID do usuário na sessão para uso posterior
                 st.session_state.user_id = authorized_record.get("id")
+                _log_auth(
+                    logging.INFO,
+                    "display_auth_ui.authorization_approved",
+                    user_id=authorized_record.get("id"),
+                )
                 
                 # Atualizar last_login
                 client.table("authorized_users").update({
                     "last_login": datetime.utcnow().isoformat()
                 }).eq("email", user.email).execute()
+                _log_auth(logging.INFO, "display_auth_ui.last_login_updated")
                 
                 # Renderizar sidebar padrão com navegação e logout
                 render_sidebar()
                 
             except Exception as e:
+                LOGGER.exception("Erro ao verificar autorização do usuário")
+                _log_auth(logging.ERROR, "display_auth_ui.authorization_error", error=str(e))
                 st.error(f"❌ Erro ao verificar autorização: {str(e)}")
                 st.info("Verifique se a tabela 'authorized_users' foi criada no Supabase")
                 with st.sidebar:
@@ -540,6 +841,7 @@ def render_sidebar():
     Renderiza o sidebar padrão da aplicação para usuários autenticados.
     Inclui logo, título, navegação com ícones e informações do usuário com logout.
     """
+    _log_auth(logging.DEBUG, "render_sidebar.start")
     st.logo(ICON_PATH, link="https://midiacode.com/")
 
     with st.sidebar:
@@ -572,6 +874,11 @@ def render_sidebar():
         # Informações do usuário + logout
         user = get_current_user()
         if user:
+            _log_auth(
+                logging.DEBUG,
+                "render_sidebar.user_present",
+                user_email=_mask_email(user.email),
+            )
             user_name = user.user_metadata.get("name", user.email)
             photo_url = user.user_metadata.get("picture")
             avatar_src = _fetch_avatar_base64(photo_url) if photo_url else None

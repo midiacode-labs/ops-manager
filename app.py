@@ -4,11 +4,40 @@ from requests.exceptions import RequestException
 from datetime import datetime
 import time
 import os
+import logging
 import boto3
 from dotenv import load_dotenv
+from uuid import uuid4
 
 from slack_notifications import send_slack_deploy_notification
 from auth import display_auth_ui
+
+
+LOGGER = logging.getLogger("ops_manager.app")
+if not LOGGER.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    )
+    LOGGER.addHandler(_handler)
+LOGGER.setLevel(os.getenv("APP_LOG_LEVEL", os.getenv("AUTH_LOG_LEVEL", "INFO")).upper())
+LOGGER.propagate = False
+
+
+def _get_trace_id() -> str:
+    if "auth_trace_id" not in st.session_state:
+        st.session_state.auth_trace_id = uuid4().hex[:12]
+    return st.session_state.auth_trace_id
+
+
+def _log_app(level: int, event: str, **fields):
+    payload = {
+        "event": event,
+        "trace_id": _get_trace_id(),
+    }
+    payload.update(fields)
+    LOGGER.log(level, " ".join(f"{k}={v}" for k, v in payload.items()))
+
 
 # Configuração da página (deve ser a primeira chamada do Streamlit)
 st.set_page_config(
@@ -17,9 +46,11 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+_log_app(logging.INFO, "app.page_configured")
 
 # Verificar autenticação - deve ser chamado antes de qualquer conteúdo
 display_auth_ui()
+_log_app(logging.INFO, "app.auth_ok")
 
 # Estilos CSS para elementos específicos (mais minimalista)
 st.markdown("""
@@ -97,16 +128,30 @@ def check_system_status(url):
         start_time = time.time()
         response = requests.get(url, timeout=10)
         response_time = time.time() - start_time
-        return response.status_code == 200, round(response_time * 1000)
+        is_ok = response.status_code == 200
+        elapsed_ms = round(response_time * 1000)
+        _log_app(
+            logging.DEBUG,
+            "system_status.checked",
+            url=url,
+            status_code=response.status_code,
+            ok=is_ok,
+            response_ms=elapsed_ms,
+        )
+        return is_ok, elapsed_ms
     except RequestException:
+        _log_app(logging.WARNING, "system_status.error", url=url)
         return False, None
 
 
 load_dotenv()
+_log_app(logging.DEBUG, "app.env_loaded")
 
 # Funções para ligar/desligar ambiente de dev
 
+
 def start_dev_environment():
+    _log_app(logging.INFO, "dev_env.start.requested")
     lambda_client = boto3.client('lambda', region_name='us-east-1')
     response = lambda_client.invoke(
         FunctionName='arn:aws:lambda:us-east-1:578416043364:function:aws-operations-tools-prod-lambda_handler_start_dev_environment',
@@ -114,9 +159,12 @@ def start_dev_environment():
     )
     status_code = response['StatusCode']
     payload = response['Payload'].read().decode() if 'Payload' in response else ''
+    _log_app(logging.INFO, "dev_env.start.completed", status_code=status_code)
     return status_code, payload
 
+
 def stop_dev_environment():
+    _log_app(logging.INFO, "dev_env.stop.requested")
     lambda_client = boto3.client('lambda', region_name='us-east-1')
     response = lambda_client.invoke(
         FunctionName='arn:aws:lambda:us-east-1:578416043364:function:aws-operations-tools-prod-lambda_handler_stop_dev_environment',
@@ -124,7 +172,9 @@ def stop_dev_environment():
     )
     status_code = response['StatusCode']
     payload = response['Payload'].read().decode() if 'Payload' in response else ''
+    _log_app(logging.INFO, "dev_env.stop.completed", status_code=status_code)
     return status_code, payload
+
 
 # Conteúdo principal - Dashboard
 if 'system_status' not in st.session_state:
@@ -133,6 +183,7 @@ if 'last_refresh_time' not in st.session_state:
     st.session_state.last_refresh_time = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 if 'selected_system_details' not in st.session_state:
     st.session_state.selected_system_details = None
+_log_app(logging.DEBUG, "app.session_state_ready")
 
 sistemas = {
     "Content Spot API": "https://dev.contentspot.midiacode.pt/health",
@@ -150,6 +201,12 @@ formatted_current_time = current_time_dt.strftime("%d/%m/%Y %H:%M:%S")
 all_systems_operational = all(
     check_system_status(url)[0] for url in sistemas.values()
 )
+_log_app(
+    logging.INFO,
+    "systems.aggregate_status",
+    all_operational=all_systems_operational,
+    total_systems=len(sistemas),
+)
 
 ligado = st.toggle(
     "Ligado",
@@ -162,6 +219,12 @@ if 'last_toggle_state' not in st.session_state:
     st.session_state.last_toggle_state = all_systems_operational
 
 if ligado != st.session_state.last_toggle_state:
+    _log_app(
+        logging.INFO,
+        "toggle.changed",
+        new_state=ligado,
+        previous_state=st.session_state.last_toggle_state,
+    )
     if ligado:
         with st.spinner("Ligando ambiente de desenvolvimento..."):
             status_code, payload = start_dev_environment()
@@ -175,6 +238,13 @@ if ligado != st.session_state.last_toggle_state:
                 source="streamlit",
                 status_code=status_code,
                 payload=payload,
+            )
+            _log_app(
+                logging.INFO,
+                "slack.notification.sent",
+                action="iniciando",
+                sent=slack_sent,
+                has_error=bool(slack_error),
             )
             if not slack_sent and os.getenv("SLACK_DEPLOY_WEBHOOK_URL"):
                 st.warning(f"Falha ao enviar notificacao para o Slack: {slack_error}")
@@ -192,6 +262,13 @@ if ligado != st.session_state.last_toggle_state:
                 status_code=status_code,
                 payload=payload,
             )
+            _log_app(
+                logging.INFO,
+                "slack.notification.sent",
+                action="desligando",
+                sent=slack_sent,
+                has_error=bool(slack_error),
+            )
             if not slack_sent and os.getenv("SLACK_DEPLOY_WEBHOOK_URL"):
                 st.warning(f"Falha ao enviar notificacao para o Slack: {slack_error}")
     st.session_state.last_toggle_state = ligado
@@ -204,6 +281,7 @@ refresh_clicked = st.button(
 )
 
 if refresh_clicked:
+    _log_app(logging.INFO, "systems.refresh.clicked")
     st.session_state.last_refresh_time = formatted_current_time
     for nome in sistemas.keys():
         if nome in st.session_state.system_status:
@@ -243,6 +321,13 @@ for nome, url in sistemas.items():
     row_cols[0].markdown(f"**{nome}**")
     row_cols[1].markdown(f'<span class="status-indicator-dot {status_dot_class}"></span><span class="{status_class}">{status_text}</span>', unsafe_allow_html=True)
     row_cols[2].markdown(tempo_resposta_text)
+    _log_app(
+        logging.DEBUG,
+        "systems.row_rendered",
+        system=nome,
+        status=status_text,
+        response_ms=response_time,
+    )
 
 st.caption(f"Última atualização: {st.session_state.last_refresh_time}")
 
