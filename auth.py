@@ -7,6 +7,7 @@ from supabase import create_client, Client
 from supabase.lib.client_options import ClientOptions
 import base64
 import os
+import requests as _requests
 from typing import Optional, Dict, Any
 from datetime import datetime
 from dotenv import load_dotenv
@@ -510,38 +511,101 @@ def display_auth_ui():
                     "last_login": datetime.utcnow().isoformat()
                 }).eq("email", user.email).execute()
                 
-                # Usuário autorizado e aprovado - Mostrar welcome banner
-                user_name = user.user_metadata.get('name', user.email)
-                render_html_block(f"""
-                <div style="
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    color: white;
-                    padding: 20px 30px;
-                    border-radius: 12px;
-                    margin-bottom: 20px;
-                    text-align: center;
-                ">
-                    <h2 style="margin: 0; font-size: 24px; margin-bottom: 5px;">
-                        ✅ Bem-vindo, {user_name}!
-                    </h2>
-                    <p style="margin: 0; font-size: 13px; opacity: 0.9;">
-                        Seu acesso foi aprovado. Você pode acessar todas as funcionalidades.
-                    </p>
-                </div>
-                """)
-                
-                col1, col2, col3 = st.columns([10, 1, 1])
-                with col3:
-                    if st.button("🚪 Logout", key="logout_btn", use_container_width=True):
-                        logout()
+                # Renderizar sidebar padrão com navegação e logout
+                render_sidebar()
                 
             except Exception as e:
                 st.error(f"❌ Erro ao verificar autorização: {str(e)}")
                 st.info("Verifique se a tabela 'authorized_users' foi criada no Supabase")
-                col1, col2, col3 = st.columns([1, 1, 1])
-                with col2:
-                    if st.button("🚪 Logout", key="logout_error"):
+                with st.sidebar:
+                    if st.button("🚪 Sair", key="logout_error", use_container_width=True):
                         logout()
+
+
+def _fetch_avatar_base64(url: str) -> Optional[str]:
+    """Busca o avatar do Google e retorna como data URI base64."""
+    try:
+        resp = _requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            mime = resp.headers.get("Content-Type", "image/jpeg").split(";")[0]
+            encoded = base64.b64encode(resp.content).decode("utf-8")
+            return f"data:{mime};base64,{encoded}"
+    except Exception:
+        pass
+    return None
+
+
+def render_sidebar():
+    """
+    Renderiza o sidebar padrão da aplicação para usuários autenticados.
+    Inclui logo, título, navegação com ícones e informações do usuário com logout.
+    """
+    with st.sidebar:
+        # Ocultar a navegação automática do Streamlit
+        st.markdown(
+            """
+            <style>
+            [data-testid="stSidebarNav"] { display: none !important; }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Logo + título
+        col_logo, col_title = st.columns([1, 2.5])
+        with col_logo:
+            st.image(ICON_PATH, width=52)
+        with col_title:
+            st.markdown(
+                "<div style='padding-top:6px;font-size:17px;font-weight:700;"
+                "color:#0067ff;line-height:1.2'>Ops Manager</div>"
+                "<div style='font-size:11px;color:#888;margin-top:2px'>Midiacode</div>",
+                unsafe_allow_html=True,
+            )
+
+        st.divider()
+
+        # Navegação
+        st.page_link("app.py", label="Dashboard", icon="🏠")
+        st.page_link("pages/manage_users.py", label="Gestão de Usuários", icon="👥")
+
+        st.divider()
+
+        # Informações do usuário + logout
+        user = get_current_user()
+        if user:
+            user_name = user.user_metadata.get("name", user.email)
+            photo_url = user.user_metadata.get("picture")
+            avatar_src = _fetch_avatar_base64(photo_url) if photo_url else None
+
+            col_photo, col_info = st.columns([1, 3])
+            with col_photo:
+                if avatar_src:
+                    st.markdown(
+                        f'<img src="{avatar_src}" style="width:36px;height:36px;'
+                        'border-radius:50%;margin-top:2px">',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        "<div style='font-size:28px;line-height:1'>👤</div>",
+                        unsafe_allow_html=True,
+                    )
+            with col_info:
+                st.markdown(
+                    f"<div style='font-size:13px;font-weight:600;line-height:1.3'>{user_name}</div>"
+                    f"<div style='font-size:11px;color:#888;overflow-wrap:anywhere'>{user.email}</div>",
+                    unsafe_allow_html=True,
+                )
+
+            st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+            st.button(
+                "🚪 Sair",
+                key="sidebar_logout",
+                use_container_width=True,
+                on_click=logout,
+            )
 
 
 def require_auth(func):

@@ -15,7 +15,7 @@ st.set_page_config(
     page_title="Midiacode Ops Manager",
     page_icon="⚙️",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 st.logo("icone_midiacode.png", link="https://midiacode.com/")
 
@@ -92,8 +92,7 @@ st.markdown("""
 st.markdown('<div class="google-header-title"><span class="google-header-logo">⚙️</span>Midiacode Ops Manager</div>', unsafe_allow_html=True)
 st.markdown('<div class="google-header-subtitle">Este painel fornece informações de status sobre os serviços do ambiente de desenvolvimento do Midiacode.<br>Verifique aqui para ver o status atual dos serviços listados abaixo.</div>', unsafe_allow_html=True)
 
-# Informação sobre páginas adicionais
-st.info("💡 Acesse a página **Gestão de Usuários** (no menu lateral) para gerenciar aprovações de novos usuários.", icon="ℹ️")
+
 def check_system_status(url):
     try:
         start_time = time.time()
