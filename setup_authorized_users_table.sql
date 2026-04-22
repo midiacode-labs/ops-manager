@@ -54,6 +54,41 @@ CREATE POLICY "Enable insert for authenticated users"
 ON authorized_users FOR INSERT
 WITH CHECK (auth.role() = 'authenticated');
 
+-- 7. Garantir registro automático de novos usuários do Auth como pendentes
+-- Função em schema privado para evitar SECURITY DEFINER em schema exposto.
+CREATE SCHEMA IF NOT EXISTS private;
+
+CREATE OR REPLACE FUNCTION private.handle_new_auth_user()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    IF NEW.email IS NULL OR btrim(NEW.email) = '' THEN
+        RETURN NEW;
+    END IF;
+
+    INSERT INTO public.authorized_users (email, name, approved)
+    VALUES (
+        lower(NEW.email),
+        NULLIF(NEW.raw_user_meta_data ->> 'name', ''),
+        false
+    )
+    ON CONFLICT (email) DO NOTHING;
+
+    RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION private.handle_new_auth_user() FROM PUBLIC;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+AFTER INSERT ON auth.users
+FOR EACH ROW
+EXECUTE FUNCTION private.handle_new_auth_user();
+
 -- ============================================================================
 -- Inserir usuários iniciais (OPCIONAL - modifique conforme necessário)
 -- ============================================================================
