@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def send_slack_deploy_notification(action, source, status_code):
+def send_slack_deploy_notification(action, source, status_code, username=None, user_email=None):
     webhook_url = os.getenv("SLACK_DEPLOY_WEBHOOK_URL")
     if not webhook_url:
         return False, "SLACK_DEPLOY_WEBHOOK_URL não configurada"
@@ -26,6 +26,16 @@ def send_slack_deploy_notification(action, source, status_code):
         action_emoji = "🔴"
     else:
         action_emoji = "🔵"
+
+    # Construir o campo de origem com nome e email do usuário se disponível
+    if username and user_email:
+        origin_text = f"{username} ({user_email})"
+    elif username:
+        origin_text = username
+    elif user_email:
+        origin_text = user_email
+    else:
+        origin_text = source
 
     message = {
         "text": (
@@ -57,7 +67,7 @@ def send_slack_deploy_notification(action, source, status_code):
                     },
                     {
                         "type": "mrkdwn",
-                        "text": f"🔗 *Origem:*\n{source}",
+                        "text": f"🔗 *Usuário:*\n{origin_text}",
                     },
                     {
                         "type": "mrkdwn",

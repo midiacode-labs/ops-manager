@@ -283,7 +283,7 @@ ligado = st.toggle(
     "Ligado",
     value=all_systems_operational,
     key="toggle_env_btn",
-    help="Ligar ou desligar ambiente de desenvolvimento"
+    help="Ligar ou desligar ambiente de sandbox"
 )
 
 if 'last_toggle_state' not in st.session_state:
@@ -296,11 +296,20 @@ if ligado != st.session_state.last_toggle_state:
         new_state=ligado,
         previous_state=st.session_state.last_toggle_state,
     )
+    # Obter nome e email do usuário logado para a notificação
+    user_name = None
+    user_email = None
+    if st.session_state.authenticated and st.session_state.user:
+        user_metadata = getattr(st.session_state.user, "user_metadata", None)
+        if isinstance(user_metadata, dict):
+            user_name = user_metadata.get("name")
+        user_email = getattr(st.session_state.user, "email", None)
+    
     if ligado:
-        with st.spinner("Ligando ambiente de desenvolvimento..."):
+        with st.spinner("Ligando ambiente de sandbox..."):
             status_code, payload = start_dev_environment()
             if status_code == 200:
-                st.success("A solicitação de ligamento do ambiente de desenvolvimento foi recebida com sucesso! Aguarde alguns minutos para ficar totalmente disponível.")
+                st.success("A solicitação de ligamento do ambiente de sandbox foi recebida com sucesso! Aguarde alguns minutos para ficar totalmente disponível.")
             else:
                 st.error(f"Erro ao ligar ambiente: {payload}")
 
@@ -308,7 +317,8 @@ if ligado != st.session_state.last_toggle_state:
                 action="iniciando",
                 source="streamlit",
                 status_code=status_code,
-                payload=payload,
+                username=user_name,
+                user_email=user_email,
             )
             _log_app(
                 logging.INFO,
@@ -320,10 +330,10 @@ if ligado != st.session_state.last_toggle_state:
             if not slack_sent and os.getenv("SLACK_DEPLOY_WEBHOOK_URL"):
                 st.warning(f"Falha ao enviar notificacao para o Slack: {slack_error}")
     else:
-        with st.spinner("Desligando ambiente de desenvolvimento..."):
+        with st.spinner("Desligando ambiente de sandbox..."):
             status_code, payload = stop_dev_environment()
             if status_code == 200:
-                st.success("A solicitação de desligamento do ambiente de desenvolvimento foi recebida com sucesso! Aguarde alguns minutos para o ambiente ser totalmente desligado.")
+                st.success("A solicitação de desligamento do ambiente de sandbox foi recebida com sucesso! Aguarde alguns minutos para o ambiente ser totalmente desligado.")
             else:
                 st.error(f"Erro ao desligar ambiente: {payload}")
 
@@ -331,7 +341,8 @@ if ligado != st.session_state.last_toggle_state:
                 action="desligando",
                 source="streamlit",
                 status_code=status_code,
-                payload=payload,
+                username=user_name,
+                user_email=user_email,
             )
             _log_app(
                 logging.INFO,
