@@ -15,11 +15,11 @@ For general architecture and development workflow, use:
 
 ## Current Implemented State
 
-The current authentication uses Supabase Auth with Google OAuth (PKCE) and access control through the `authorized_users` table.
+The current authentication uses Supabase Auth with email and password, plus access control through the `authorized_users` table.
 
 ## Relevant Files
 
-- `auth.py`: main login, callback, session, authorization, and logout flow
+- `auth.py`: main login (signin/signup), session, authorization, and logout flow
 - `app.py`: calls `display_auth_ui()` before any sensitive content
 - `pages/manage_users.py`: calls `display_auth_ui()` and revalidates permission locally
 
@@ -48,38 +48,27 @@ Mandatory requirements:
    - `user`
    - `authenticated`
    - `_supabase_auth_storage`
-2. `handle_auth_callback()` processes the `code` query param and exchanges it for a session with `exchange_code_for_session`.
-3. `check_session()` validates the current in-memory session.
-4. If not authenticated:
-   - renders the custom login screen
-   - generates the OAuth URL via `get_google_oauth_url()`
-   - stops execution with `st.stop()`
-5. If authenticated:
+  - `auth_feedback`
+2. `check_session()` validates the current in-memory session.
+3. If not authenticated:
+  - renders the custom login screen
+  - offers `Entrar` (signin) with email/senha
+  - offers `Solicitar acesso` (signup) with email/senha
+  - stops execution with `st.stop()`
+4. If authenticated:
    - looks up the user by email in `authorized_users`
-   - if not found: pending status + optional logout + `st.stop()`
-   - if `approved=false`: review status + optional logout + `st.stop()`
+  - if not found: creates pending record and blocks access
+  - if `approved=false`: blocks access and logs out
    - if approved:
      - stores `st.session_state.user_id` with the table `id`
      - updates `last_login`
-     - shows welcome banner + logout button
-
-## OAuth and Callback
-
-- `get_google_oauth_url()` uses `sign_in_with_oauth` with:
-  - provider: `google`
-  - scopes: `profile email`
-  - redirect: `STREAMLIT_REDIRECT_URL` (localhost fallback)
-- The current flow uses PKCE and includes `pkce_code_verifier` in the redirect.
-- `handle_auth_callback()` reads `code` and `pkce_code_verifier` from `st.query_params`.
+    - renders sidebar + logout button
 
 ## Environment Variables
 
 Required:
 - `SUPABASE_URL`
 - `SUPABASE_KEY`
-
-Optional:
-- `STREAMLIT_REDIRECT_URL` (default: `http://localhost:8501`)
 
 ## Authorization Table
 
@@ -114,7 +103,8 @@ When creating a new protected page:
 ## Auth Checklist
 
 - [ ] `display_auth_ui()` at the start of protected pages
-- [ ] OAuth callback flow working
+- [ ] Signin (email/senha) working
+- [ ] Signup (email/senha) working
 - [ ] Unregistered user handled as pending
 - [ ] User with `approved=false` blocked
 - [ ] `last_login` updated for approved users
@@ -125,7 +115,6 @@ When creating a new protected page:
 
 - Supabase Auth: https://supabase.com/docs/guides/auth
 - Streamlit Session State: https://docs.streamlit.io/develop/api-reference/caching-and-state/st.session_state
-- OAuth 2.0: https://developers.google.com/identity/protocols/oauth2
 
 ---
 
