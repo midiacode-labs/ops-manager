@@ -4,6 +4,29 @@ Todas as mudanças relevantes deste projeto serão documentadas neste arquivo.
 
 O formato segue o padrão [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto adota [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.3.0] - 2026-04-22
+
+### Adicionado
+- Nova página de evidências de backup em `pages/backup.py`, com navegação dedicada na barra lateral.
+- Geração de relatório em PDF para evidências de backup via `backup_pdf_report.py`.
+- Coleta e consolidação de evidências de backup para OpenSearch e RDS, incluindo priorização de status de recursos.
+- Registro automático de novos usuários autenticados como pendentes na tabela `authorized_users`.
+- Script SQL de suporte para criação/ajuste da tabela de usuários autorizados em `setup_authorized_users_table.sql`.
+
+### Alterado
+- Fluxo de autenticação migrado para login e solicitação de acesso com e-mail e senha em `auth.py`.
+- Remoção do fluxo de autenticação com Google OAuth e da lógica de fallback PKCE.
+- Ajustes de interface e feedback no processo de autenticação (entrar, solicitar acesso e mensagens de estado).
+- Títulos e elementos visuais da página de backup atualizados, incluindo indicador de status não suportado.
+
+### Melhorado
+- Coleta de evidências de backup do OpenSearch refatorada para uso de API com assinatura SigV4.
+- Logging do fluxo de backup aprimorado para facilitar rastreabilidade e diagnóstico.
+
+### Documentação
+- `README.md` atualizado com orientações e contexto das novas funcionalidades de backup e autenticação.
+- Arquivo de instruções de autenticação atualizado em `.github/instructions/auth.instructions.md`.
+
 ## [0.2.0] - 2026-04-22
 
 ### Adicionado
