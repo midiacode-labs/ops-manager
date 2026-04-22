@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 from auth import display_auth_ui
 from backup_evidence_report import AwsBackupEvidenceCollector, BackupResource
+from backup_pdf_report import generate_pdf
 
 load_dotenv()
 
@@ -541,8 +542,8 @@ if not resources:
     )
     st.stop()
 
-# Botão de atualização
-col_refresh, _ = st.columns([1, 5])
+# Botões de ação
+col_refresh, col_pdf, _ = st.columns([1, 1, 4])
 with col_refresh:
     if st.button("🔄 Atualizar relatório"):
         st.session_state.pop("backup_report_cache", None)
@@ -562,6 +563,25 @@ report_data = st.session_state.backup_report_cache
 reports = report_data.get("reports", [])
 summary = report_data.get("summary", {})
 generated_at = report_data.get("generated_at", "")
+
+# Botão Exportar PDF (disponível assim que o relatório for carregado)
+with col_pdf:
+    try:
+        system_url = os.getenv(
+            "STREAMLIT_REDIRECT_URL", "http://localhost:8501"
+        )
+        pdf_bytes = generate_pdf(report_data, system_url=system_url)
+        from datetime import datetime, timezone
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+        st.download_button(
+            label="📄 Exportar PDF",
+            data=pdf_bytes,
+            file_name=f"evidencias_backup_{ts}.pdf",
+            mime="application/pdf",
+        )
+    except Exception as exc:
+        LOGGER.error("backup.pdf_generation_failed error=%s", exc)
+        st.error(f"Erro ao gerar PDF: {exc}")
 
 # Resumo global
 st.markdown(f"*Relatório gerado em: {_format_datetime(generated_at)}*")
