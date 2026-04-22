@@ -931,6 +931,7 @@ def render_sidebar():
         # Navegação
         st.page_link("app.py", label="Painel", icon="🏠")
         st.page_link("pages/manage_users.py", label="Gestão de Usuários", icon="👥")
+        st.page_link("pages/backup.py", label="Evidências de Backup", icon="🗄️")
 
         st.divider()
 

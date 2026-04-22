@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Gera um relatório JSON com evidências dos últimos backups por recurso AWS.
+Módulo de coleta de evidências de backup de recursos AWS.
 
-Este script usa a AWS CLI (comando `aws backup list-recovery-points-by-resource`)
-para coletar dados de backup por ARN de recurso.
+Pode ser importado por outras aplicações (ex.: Streamlit) ou executado
+diretamente via CLI para gerar um relatório JSON consolidado.
 """
 
 from __future__ import annotations
@@ -504,6 +504,11 @@ class AwsBackupEvidenceCollector:
                     ),
                     "indices_count": (
                         len(latest_snapshot.get("indices", []))
+                        if latest_snapshot and isinstance(latest_snapshot.get("indices"), list)
+                        else None
+                    ),
+                    "indices": (
+                        sorted(latest_snapshot.get("indices", []))
                         if latest_snapshot and isinstance(latest_snapshot.get("indices"), list)
                         else None
                     ),
