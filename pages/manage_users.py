@@ -23,6 +23,196 @@ LOGGER.setLevel(os.getenv("APP_LOG_LEVEL", os.getenv("AUTH_LOG_LEVEL", "INFO")).
 LOGGER.propagate = False
 
 
+def _render_manage_users_styles():
+    font_css_url = (
+        "https://fonts.googleapis.com/css2?"
+        "family=Manrope:wght@500;700;800&display=swap"
+    )
+    css = """
+        <style>
+        @import url('__FONT_URL__');
+
+        html, body, [class*="css"], [data-testid="stAppViewContainer"] {
+            font-family: 'Manrope', sans-serif;
+        }
+
+        .ops-table-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin: 8px 0 16px 0;
+            padding: 14px 16px;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            border-radius: 12px;
+            color: #f8fafc;
+        }
+
+        .ops-table-count {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .ops-table-header {
+            margin-top: 10px;
+            margin-bottom: 4px;
+            font-weight: 800;
+            font-size: 12px;
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+            color: #475569;
+        }
+
+        .ops-pill {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            padding: 3px 10px;
+            font-size: 12px;
+            font-weight: 700;
+            line-height: 1.4;
+            white-space: nowrap;
+        }
+
+        .ops-pill--success {
+            color: #166534;
+            background: #dcfce7;
+            border: 1px solid #86efac;
+        }
+
+        .ops-pill--muted {
+            color: #334155;
+            background: #e2e8f0;
+            border: 1px solid #cbd5e1;
+        }
+
+        .ops-pill--warning {
+            color: #92400e;
+            background: #fef3c7;
+            border: 1px solid #fcd34d;
+        }
+
+        .ops-cell-main {
+            color: #0f172a;
+            font-weight: 700;
+            font-size: 14px;
+        }
+
+        .ops-cell-sub {
+            color: #64748b;
+            font-size: 12px;
+            margin-top: 2px;
+        }
+
+        .ops-divider {
+            margin: 6px 0 10px 0;
+            border: none;
+            border-top: 1px solid #e2e8f0;
+        }
+
+        .ops-stat-card {
+            padding: 16px;
+            border-radius: 14px;
+            border: 1px solid #e2e8f0;
+            background: #ffffff;
+            min-height: 96px;
+        }
+
+        .ops-stat-label {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #64748b;
+            font-weight: 800;
+            margin-bottom: 6px;
+        }
+
+        .ops-stat-value {
+            font-size: 30px;
+            color: #0f172a;
+            font-weight: 800;
+            line-height: 1.1;
+        }
+
+        .ops-stat-hint {
+            margin-top: 4px;
+            color: #475569;
+            font-size: 12px;
+        }
+
+        .ops-section-title {
+            margin-top: 14px;
+            margin-bottom: 10px;
+            font-weight: 800;
+            color: #0f172a;
+            font-size: 18px;
+        }
+
+        .ops-page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 14px;
+            margin: 6px 0 20px 0;
+            padding: 16px;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            background:
+                radial-gradient(circle at top right, #e2e8f0 0%, transparent 50%),
+                linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+        }
+
+        .ops-page-title {
+            margin: 0;
+            color: #0f172a;
+            font-size: 30px;
+            font-weight: 800;
+            line-height: 1.15;
+        }
+
+        .ops-page-subtitle {
+            margin-top: 8px;
+            color: #475569;
+            font-size: 14px;
+            max-width: 760px;
+        }
+
+        .ops-page-badge {
+            background: #0f172a;
+            color: #f8fafc;
+            border-radius: 999px;
+            padding: 6px 12px;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        @media (max-width: 900px) {
+            .ops-page-header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .ops-page-title {
+                font-size: 25px;
+            }
+        }
+        </style>
+        """
+    st.markdown(
+        css.replace("__FONT_URL__", font_css_url),
+        unsafe_allow_html=True,
+    )
+
+
+def _format_datetime(value) -> str:
+    if not value:
+        return "-"
+    return pd.to_datetime(value).strftime("%d/%m/%Y %H:%M")
+
+
 def _get_trace_id() -> str:
     if "auth_trace_id" not in st.session_state:
         st.session_state.auth_trace_id = uuid4().hex[:12]
@@ -61,7 +251,22 @@ _log_page(logging.INFO, "manage_users.page_configured")
 display_auth_ui()
 _log_page(logging.INFO, "manage_users.auth_ok")
 
-st.title("👥 Gestão de Usuários")
+_render_manage_users_styles()
+st.markdown(
+    """
+    <div class="ops-page-header">
+        <div>
+            <h1 class="ops-page-title">Gestão de Usuários</h1>
+            <div class="ops-page-subtitle">
+                Gerencie aprovações e permissões de acesso ao Ops Manager
+                com rastreabilidade e segurança.
+            </div>
+        </div>
+        <div class="ops-page-badge">Área administrativa</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ============================================================================
 # Verificar se o usuário atual está aprovado (admin implícito)
@@ -134,24 +339,73 @@ with tab1:
         if not pending_users:
             st.info("✅ Nenhum usuário aguardando aprovação")
         else:
-            st.write(f"**{len(pending_users)} usuário(s) aguardando aprovação**")
+            st.markdown(
+                f"""
+                <div
+                    class="ops-table-toolbar"
+                    style="background: linear-gradient(135deg, #7c2d12 0%, #9a3412 100%);"
+                >
+                    <div>
+                        <div style="font-weight:800; font-size:16px;">
+                            Solicitações aguardando revisão
+                        </div>
+                        <div class="ops-table-count">
+                            Aprove ou mantenha em análise conforme a necessidade.
+                        </div>
+                    </div>
+                    <div class="ops-pill ops-pill--warning">{len(pending_users)} pendente(s)</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-            header_cols = st.columns([3, 2, 2, 3, 2])
-            header_cols[0].markdown("**Email**")
-            header_cols[1].markdown("**Nome**")
-            header_cols[2].markdown("**Criado em**")
-            header_cols[3].markdown("**Notas**")
-            header_cols[4].markdown("**Ação**")
+            header_cols = st.columns([3.0, 1.8, 1.8, 2.6, 1.5])
+            header_cols[0].markdown(
+                '<div class="ops-table-header">Email</div>',
+                unsafe_allow_html=True,
+            )
+            header_cols[1].markdown(
+                '<div class="ops-table-header">Nome</div>',
+                unsafe_allow_html=True,
+            )
+            header_cols[2].markdown(
+                '<div class="ops-table-header">Criado em</div>',
+                unsafe_allow_html=True,
+            )
+            header_cols[3].markdown(
+                '<div class="ops-table-header">Notas</div>',
+                unsafe_allow_html=True,
+            )
+            header_cols[4].markdown(
+                '<div class="ops-table-header">Ação</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown('<hr class="ops-divider" />', unsafe_allow_html=True)
 
             for user in pending_users:
-                row_cols = st.columns([3, 2, 2, 3, 2])
-                row_cols[0].write(user.get("email", "-"))
-                row_cols[1].write(user.get("name") or "Sem nome")
-                row_cols[2].write(pd.to_datetime(user.get("created_at")).strftime("%d/%m/%Y %H:%M"))
-                row_cols[3].write(user.get("notes") or "-")
+                row_cols = st.columns(
+                    [3.0, 1.8, 1.8, 2.6, 1.5],
+                    vertical_alignment="center",
+                )
+                row_cols[0].markdown(
+                    f'<div class="ops-cell-main">{user.get("email", "-")}</div>',
+                    unsafe_allow_html=True,
+                )
+                row_cols[1].markdown(
+                    f'<div class="ops-cell-main">{user.get("name") or "Sem nome"}</div>',
+                    unsafe_allow_html=True,
+                )
+                row_cols[2].markdown(
+                    f'<div class="ops-cell-sub">{_format_datetime(user.get("created_at"))}</div>',
+                    unsafe_allow_html=True,
+                )
+                row_cols[3].markdown(
+                    f'<div class="ops-cell-sub">{user.get("notes") or "Sem observações"}</div>',
+                    unsafe_allow_html=True,
+                )
 
                 if row_cols[4].button(
-                    "✅ Aprovar",
+                    "Aprovar",
                     key=f"approve_{user.get('email')}",
                     type="primary",
                     use_container_width=True,
@@ -187,6 +441,8 @@ with tab1:
                         )
                         st.error(f"Erro ao aprovar usuário: {str(e)}")
 
+                st.markdown('<hr class="ops-divider" />', unsafe_allow_html=True)
+
     except Exception as e:
         LOGGER.exception("Erro ao carregar pendentes")
         _log_page(logging.ERROR, "manage_users.tab_pending.error", error=str(e))
@@ -216,32 +472,89 @@ with tab2:
         if not approved_users:
             st.info("Nenhum usuário aprovado ainda")
         else:
-            st.write(f"**{len(approved_users)} usuário(s) aprovado(s)**")
+            st.markdown(
+                f"""
+                <div class="ops-table-toolbar">
+                    <div>
+                        <div style="font-weight:800; font-size:16px;">Lista de acessos ativos</div>
+                        <div class="ops-table-count">
+                            Gerencie permissões de forma rápida e segura.
+                        </div>
+                    </div>
+                    <div class="ops-pill ops-pill--success">{len(approved_users)} aprovado(s)</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-            header_cols = st.columns([3, 2, 2, 2, 2, 3, 2])
-            header_cols[0].markdown("**Email**")
-            header_cols[1].markdown("**Nome**")
-            header_cols[2].markdown("**Criado em**")
-            header_cols[3].markdown("**Último Acesso**")
-            header_cols[4].markdown("**Aprovado por**")
-            header_cols[5].markdown("**Notas**")
-            header_cols[6].markdown("**Ação**")
+            header_cols = st.columns([2.8, 1.6, 1.5, 1.5, 2.0, 2.2, 1.5])
+            header_cols[0].markdown(
+                '<div class="ops-table-header">Email</div>',
+                unsafe_allow_html=True,
+            )
+            header_cols[1].markdown(
+                '<div class="ops-table-header">Nome</div>',
+                unsafe_allow_html=True,
+            )
+            header_cols[2].markdown(
+                '<div class="ops-table-header">Criado em</div>',
+                unsafe_allow_html=True,
+            )
+            header_cols[3].markdown(
+                '<div class="ops-table-header">Último acesso</div>',
+                unsafe_allow_html=True,
+            )
+            header_cols[4].markdown(
+                '<div class="ops-table-header">Aprovado por</div>',
+                unsafe_allow_html=True,
+            )
+            header_cols[5].markdown(
+                '<div class="ops-table-header">Notas</div>',
+                unsafe_allow_html=True,
+            )
+            header_cols[6].markdown(
+                '<div class="ops-table-header">Ação</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown('<hr class="ops-divider" />', unsafe_allow_html=True)
 
             for user in approved_users:
-                row_cols = st.columns([3, 2, 2, 2, 2, 3, 2])
-                row_cols[0].write(user.get("email", "-"))
-                row_cols[1].write(user.get("name") or "Sem nome")
-                row_cols[2].write(pd.to_datetime(user.get("created_at")).strftime("%d/%m/%Y %H:%M"))
-                row_cols[3].write(
-                    pd.to_datetime(user.get("last_login")).strftime("%d/%m/%Y %H:%M")
-                    if user.get("last_login")
-                    else "Nunca"
+                row_cols = st.columns(
+                    [2.8, 1.6, 1.5, 1.5, 2.0, 2.2, 1.5],
+                    vertical_alignment="center",
                 )
-                row_cols[4].write(user.get("approved_by") or "-")
-                row_cols[5].write(user.get("notes") or "-")
+                row_cols[0].markdown(
+                    f'<div class="ops-cell-main">{user.get("email", "-")}</div>',
+                    unsafe_allow_html=True,
+                )
+                row_cols[1].markdown(
+                    f'<div class="ops-cell-main">{user.get("name") or "Sem nome"}</div>',
+                    unsafe_allow_html=True,
+                )
+                row_cols[2].markdown(
+                    f'<div class="ops-cell-sub">{_format_datetime(user.get("created_at"))}</div>',
+                    unsafe_allow_html=True,
+                )
+                row_cols[3].markdown(
+                    (
+                        f"<span class=\"ops-pill ops-pill--success\">"
+                        f"{_format_datetime(user.get('last_login'))}</span>"
+                        if user.get("last_login")
+                        else '<span class="ops-pill ops-pill--muted">Nunca acessou</span>'
+                    ),
+                    unsafe_allow_html=True,
+                )
+                row_cols[4].markdown(
+                    f'<div class="ops-cell-sub">{user.get("approved_by") or "-"}</div>',
+                    unsafe_allow_html=True,
+                )
+                row_cols[5].markdown(
+                    f'<div class="ops-cell-sub">{user.get("notes") or "Sem observações"}</div>',
+                    unsafe_allow_html=True,
+                )
 
                 if row_cols[6].button(
-                    "🔒 Revogar",
+                    "Revogar",
                     key=f"revoke_{user.get('email')}",
                     use_container_width=True,
                 ):
@@ -276,6 +589,8 @@ with tab2:
                         )
                         st.error(f"Erro ao revogar acesso: {str(e)}")
 
+                st.markdown('<hr class="ops-divider" />', unsafe_allow_html=True)
+
     except Exception as e:
         LOGGER.exception("Erro ao carregar aprovados")
         _log_page(logging.ERROR, "manage_users.tab_approved.error", error=str(e))
@@ -305,47 +620,148 @@ with tab3:
             approved=approved_count,
             pending=pending_count,
         )
+        approved_pct = (approved_count / total_users * 100) if total_users else 0.0
+        pending_pct = (pending_count / total_users * 100) if total_users else 0.0
 
-        # Exibir métricas
+        st.markdown(
+            """
+            <div
+                class="ops-table-toolbar"
+                style="background: linear-gradient(135deg, #1d4ed8 0%, #0369a1 100%);"
+            >
+                <div>
+                    <div style="font-weight:800; font-size:16px;">
+                        Resumo operacional de usuários
+                    </div>
+                    <div class="ops-table-count">
+                        Acompanhe volume total, aprovações e pendências em tempo real.
+                    </div>
+                </div>
+                <div class="ops-pill ops-pill--muted">Atualizado agora</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Exibir métricas em cards
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            st.metric("Total de Usuários", total_users)
+            st.markdown(
+                f"""
+                <div class="ops-stat-card">
+                    <div class="ops-stat-label">Total de usuários</div>
+                    <div class="ops-stat-value">{total_users}</div>
+                    <div class="ops-stat-hint">Base completa cadastrada</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         with col2:
-            st.metric("✅ Aprovados", approved_count)
+            st.markdown(
+                f"""
+                <div class="ops-stat-card">
+                    <div class="ops-stat-label">Aprovados</div>
+                    <div class="ops-stat-value">{approved_count}</div>
+                    <div class="ops-stat-hint">{approved_pct:.1f}% da base total</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         with col3:
-            st.metric("⏳ Pendentes", pending_count)
+            st.markdown(
+                f"""
+                <div class="ops-stat-card">
+                    <div class="ops-stat-label">Pendentes</div>
+                    <div class="ops-stat-value">{pending_count}</div>
+                    <div class="ops-stat-hint">{pending_pct:.1f}% da base total</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         st.markdown("---")
 
-        # Gráfico de aprovação
+        # Distribuição de aprovação
         if total_users > 0:
-            st.subheader("Status de Aprovação")
+            st.markdown(
+                '<div class="ops-section-title">Status de Aprovação</div>',
+                unsafe_allow_html=True,
+            )
 
-            approval_data = pd.DataFrame({
-                "Status": ["Aprovados", "Pendentes"],
-                "Quantidade": [approved_count, pending_count]
-            })
-
-            st.bar_chart(approval_data.set_index("Status"))
+            progress_cols = st.columns(2)
+            with progress_cols[0]:
+                st.markdown("**Aprovados**")
+                st.progress(
+                    approved_count / total_users,
+                    text=f"{approved_count} usuário(s) • {approved_pct:.1f}%",
+                )
+            with progress_cols[1]:
+                st.markdown("**Pendentes**")
+                st.progress(
+                    pending_count / total_users,
+                    text=f"{pending_count} usuário(s) • {pending_pct:.1f}%",
+                )
 
         st.markdown("---")
 
         # Usuários mais recentes
-        st.subheader("📝 Usuários Mais Recentes")
+        st.markdown(
+            '<div class="ops-section-title">Usuários Mais Recentes</div>',
+            unsafe_allow_html=True,
+        )
 
         if all_users:
-            recent_users = sorted(all_users, key=lambda x: x["created_at"], reverse=True)[:5]
+            recent_users = sorted(
+                all_users,
+                key=lambda x: x["created_at"],
+                reverse=True,
+            )[:5]
 
-            df_recent = pd.DataFrame(recent_users)
-            df_recent = df_recent[["email", "name", "approved", "created_at"]]
-            df_recent.columns = ["Email", "Nome", "Aprovado", "Data"]
-            df_recent["Aprovado"] = df_recent["Aprovado"].apply(lambda x: "✅ Sim" if x else "⏳ Não")
-            df_recent["Data"] = pd.to_datetime(df_recent["Data"]).dt.strftime("%d/%m/%Y %H:%M")
+            recent_header = st.columns([3.0, 1.8, 1.6, 1.6])
+            recent_header[0].markdown(
+                '<div class="ops-table-header">Email</div>',
+                unsafe_allow_html=True,
+            )
+            recent_header[1].markdown(
+                '<div class="ops-table-header">Nome</div>',
+                unsafe_allow_html=True,
+            )
+            recent_header[2].markdown(
+                '<div class="ops-table-header">Status</div>',
+                unsafe_allow_html=True,
+            )
+            recent_header[3].markdown(
+                '<div class="ops-table-header">Criado em</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown('<hr class="ops-divider" />', unsafe_allow_html=True)
 
-            st.dataframe(df_recent, use_container_width=True, hide_index=True)
+            for user in recent_users:
+                recent_cols = st.columns([3.0, 1.8, 1.6, 1.6])
+                recent_cols[0].markdown(
+                    f'<div class="ops-cell-main">{user.get("email", "-")}</div>',
+                    unsafe_allow_html=True,
+                )
+                recent_cols[1].markdown(
+                    f'<div class="ops-cell-main">{user.get("name") or "Sem nome"}</div>',
+                    unsafe_allow_html=True,
+                )
+                recent_cols[2].markdown(
+                    (
+                        '<span class="ops-pill ops-pill--success">Aprovado</span>'
+                        if user.get("approved")
+                        else '<span class="ops-pill ops-pill--warning">Pendente</span>'
+                    ),
+                    unsafe_allow_html=True,
+                )
+                recent_cols[3].markdown(
+                    f'<div class="ops-cell-sub">{_format_datetime(user.get("created_at"))}</div>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown('<hr class="ops-divider" />', unsafe_allow_html=True)
         else:
             st.info("Nenhum usuário registrado ainda")
 

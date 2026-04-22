@@ -929,7 +929,7 @@ def render_sidebar():
         st.divider()
 
         # Navegação
-        st.page_link("app.py", label="Painel de Sandbox", icon="🏠")
+        st.page_link("app.py", label="Painel", icon="🏠")
         st.page_link("pages/manage_users.py", label="Gestão de Usuários", icon="👥")
 
         st.divider()

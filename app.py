@@ -55,6 +55,64 @@ _log_app(logging.INFO, "app.auth_ok")
 # Estilos CSS para elementos específicos (mais minimalista)
 st.markdown("""
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&display=swap');
+
+    html, body, [class*="css"], [data-testid="stAppViewContainer"] {
+        font-family: 'Manrope', sans-serif;
+    }
+
+    .ops-page-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 14px;
+        margin: 6px 0 20px 0;
+        padding: 16px;
+        border: 1px solid #e2e8f0;
+        border-radius: 16px;
+        background:
+            radial-gradient(circle at top right, #e2e8f0 0%, transparent 50%),
+            linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+    }
+
+    .ops-page-title {
+        margin: 0;
+        color: #0f172a;
+        font-size: 30px;
+        font-weight: 800;
+        line-height: 1.15;
+    }
+
+    .ops-page-subtitle {
+        margin-top: 8px;
+        color: #475569;
+        font-size: 14px;
+        max-width: 760px;
+    }
+
+    .ops-page-badge {
+        background: #0f172a;
+        color: #f8fafc;
+        border-radius: 999px;
+        padding: 6px 12px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+        white-space: nowrap;
+    }
+
+    @media (max-width: 900px) {
+        .ops-page-header {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+
+        .ops-page-title {
+            font-size: 25px;
+        }
+    }
+
     .google-header-title {
         font-size: 24px;
         font-weight: 500;
@@ -113,14 +171,27 @@ st.markdown("""
         background-color: #0067ff;
         color: white;
     }
-    </style>            
+    </style>
 </style>
 """, unsafe_allow_html=True)
 
 # Cabeçalho
-st.markdown('<div class="google-header-title">Painel de Sandbox</div>', unsafe_allow_html=True)
-st.markdown('<div class="google-header-brand">Midiacode</div>', unsafe_allow_html=True)
-st.markdown('<div class="google-header-subtitle">Este painel fornece informações de status sobre os serviços do ambiente de sandbox do Midiacode.<br>Verifique aqui para ver o status atual dos serviços listados abaixo.</div>', unsafe_allow_html=True)
+st.markdown(
+    """
+    <div class="ops-page-header">
+        <div>
+            <h1 class="ops-page-title">Painel</h1>
+            <div class="ops-page-subtitle">
+                Este painel fornece informações de status sobre os serviços do
+                ambiente de sandbox do Midiacode. Verifique aqui o status atual
+                dos serviços listados abaixo.
+            </div>
+        </div>
+        <div class="ops-page-badge">Sandbox</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 def check_system_status(url):
