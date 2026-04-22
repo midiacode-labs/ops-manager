@@ -20,10 +20,11 @@ def send_slack_deploy_notification(action, source, status_code, username=None, u
     status_label = "✅ sucesso" if status_code == 200 else "❌ falha"
 
     _action_lower = action.lower()
-    if any(kw in _action_lower for kw in ("inici", "start", "up", "liga")):
-        action_emoji = "🟢"
-    elif any(kw in _action_lower for kw in ("par", "stop", "down", "deslig")):
+    # Prioriza detecção de parada para evitar falso positivo de "liga" em "desligando".
+    if any(kw in _action_lower for kw in ("par", "stop", "down", "deslig")):
         action_emoji = "🔴"
+    elif any(kw in _action_lower for kw in ("inici", "start", "up", "liga")):
+        action_emoji = "🟢"
     else:
         action_emoji = "🔵"
 
