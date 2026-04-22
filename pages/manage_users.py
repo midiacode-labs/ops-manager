@@ -84,7 +84,7 @@ with tab1:
             selected_email = st.selectbox(
                 "Selecione um usuário para aprovação",
                 options=[u["email"] for u in pending_users],
-                format_func=lambda x: f"{x} ({next((u['name'] or 'Sem nome') for u in pending_users if u['email'] == x, 'N/A')})",
+                format_func=lambda x: f"{x} ({next(((u['name'] or 'Sem nome') for u in pending_users if u['email'] == x), 'N/A')})",
                 key="pending_select"
             )
             
@@ -177,7 +177,7 @@ with tab2:
             selected_approved_email = st.selectbox(
                 "Selecione um usuário aprovado",
                 options=[u["email"] for u in approved_users],
-                format_func=lambda x: f"{x} ({next((u['name'] or 'Sem nome') for u in approved_users if u['email'] == x, 'N/A')})",
+                format_func=lambda x: f"{x} ({next(((u['name'] or 'Sem nome') for u in approved_users if u['email'] == x), 'N/A')})",
                 key="approved_select"
             )
             
