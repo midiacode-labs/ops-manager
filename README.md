@@ -43,7 +43,6 @@ SLACK_DEPLOY_APP_NAME=Midiacode Ops Manager
 
 - `SUPABASE_URL`: URL do projeto no Supabase.
 - `SUPABASE_KEY`: use a chave pública do projeto (`anon` ou `publishable`).
-- `STREAMLIT_REDIRECT_URL`: URL base do app Streamlit que recebe o callback do login.
 
 ### Variáveis opcionais para Slack
 
@@ -58,15 +57,14 @@ Observações:
 
 ## Configuração do Login com Supabase
 
-O fluxo de login deste projeto usa o Supabase Auth com Google OAuth.
+O fluxo de login deste projeto usa o Supabase Auth com email e senha.
 
 ### Quick start
 
 1. Crie o arquivo `.env` na seção [Configuração do `.env`](#configuração-do-env).
 2. Crie ou selecione um projeto no Supabase.
-3. Habilite o provedor Google em `Authentication` -> `Providers` no Supabase.
-4. Configure o cliente OAuth Web no Google Cloud Console com as URLs de callback do projeto.
-5. Execute o SQL de `setup_authorized_users_table.sql` e insira pelo menos um usuário com `approved = true`.
+3. Em `Authentication` -> `Providers`, mantenha o login por Email habilitado.
+4. Execute o SQL de `setup_authorized_users_table.sql` e insira pelo menos um usuário com `approved = true`.
 
 Depois disso, inicie o app com `poetry run streamlit run app.py`.
 
@@ -81,25 +79,12 @@ Além do Streamlit, o login depende principalmente de:
 
 1. Crie ou use um projeto existente no Supabase.
 2. No dashboard do Supabase, vá em `Authentication` -> `Providers`.
-3. Habilite o provedor `Google`.
-4. Configure o `Client ID` e `Client Secret` do Google OAuth.
+3. Verifique se o provedor `Email` está habilitado.
+4. Opcionalmente configure confirmação de email para novos cadastros.
 
-### 2. Configurar o Google OAuth
+### 2. Criar a tabela de autorização
 
-No Google Cloud Console, configure um cliente OAuth Web com estas URLs:
-
-- Authorized JavaScript origins:
-   - `http://localhost:8501`
-   - `https://<seu-project-ref>.supabase.co`
-- Authorized redirect URIs:
-   - `http://localhost:8501`
-   - `https://<seu-project-ref>.supabase.co/auth/v1/callback`
-
-Observação: para produção, adicione também a URL pública do app no Streamlit Cloud.
-
-### 3. Criar a tabela de autorização
-
-O login autentica o usuário no Google, mas o acesso ao app só é liberado se o email estiver autorizado na tabela `authorized_users`.
+O usuário pode criar conta com email/senha, mas o acesso ao app só é liberado se o email estiver aprovado na tabela `authorized_users`.
 
 Você deve criar essa tabela no Supabase executando o SQL do arquivo:
 
@@ -112,16 +97,17 @@ Esse script cria:
 - políticas RLS
 - trigger de atualização de `last_login`
 
-### 4. Aprovação de usuários
+### 3. Aprovação de usuários
 
 O fluxo implementado neste projeto funciona assim:
 
-1. O usuário faz login com Google via Supabase.
-2. O app consulta a tabela `authorized_users`.
-3. Se o usuário não existir ou não estiver com `approved = true`, o acesso é bloqueado.
-4. Apenas usuários aprovados acessam o dashboard principal.
+1. O usuário pode se cadastrar na tela inicial com email e senha.
+2. O app consulta a tabela `authorized_users` no login.
+3. Se o usuário não existir, o registro pendente é criado automaticamente com `approved = false`.
+4. Se `approved = false`, o acesso é bloqueado até aprovação do admin.
+5. Apenas usuários aprovados acessam o dashboard principal.
 
-### 5. Primeiro acesso administrativo
+### 4. Primeiro acesso administrativo
 
 Garanta que pelo menos um usuário administrador esteja inserido manualmente na tabela `authorized_users` com `approved = true`, para conseguir acessar o app e aprovar outros usuários.
 
@@ -143,7 +129,7 @@ poetry run streamlit run app.py
 
 O aplicativo ficará disponível em `http://localhost:8501`.
 
-Se o login estiver configurado corretamente, ao abrir o app você verá a tela de login e poderá autenticar com Google via Supabase.
+Se o login estiver configurado corretamente, ao abrir o app você verá a tela com opções de entrar e solicitar acesso por email/senha.
 
 ## Notificações no Slack
 
