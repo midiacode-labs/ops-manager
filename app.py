@@ -8,6 +8,7 @@ import boto3
 from dotenv import load_dotenv
 
 from slack_notifications import send_slack_deploy_notification
+from auth import display_auth_ui
 
 # Configuração da página (deve ser a primeira chamada do Streamlit)
 st.set_page_config(
@@ -17,6 +18,10 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 st.logo("icone_midiacode.png", link="https://midiacode.com/")
+
+# Verificar autenticação - deve ser chamado antes de qualquer conteúdo
+display_auth_ui()
+
 # Estilos CSS para elementos específicos (mais minimalista)
 st.markdown("""
 <style>
@@ -87,19 +92,8 @@ st.markdown("""
 st.markdown('<div class="google-header-title"><span class="google-header-logo">⚙️</span>Midiacode Ops Manager</div>', unsafe_allow_html=True)
 st.markdown('<div class="google-header-subtitle">Este painel fornece informações de status sobre os serviços do ambiente de desenvolvimento do Midiacode.<br>Verifique aqui para ver o status atual dos serviços listados abaixo.</div>', unsafe_allow_html=True)
 
-# Sidebar para navegação
-with st.sidebar:
-    st.title("Menu")
-    option = st.selectbox(
-        "Selecione uma opção",
-        ["Dashboard"]
-    )
-    # st.write("Usuário: Admin")
-    if 'last_check_time' not in st.session_state:
-        st.session_state.last_check_time = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    # st.write(f"Última verificação: {st.session_state.last_check_time}")
-
-# Função para verificar o status de um sistema
+# Informação sobre páginas adicionais
+st.info("💡 Acesse a página **Gestão de Usuários** (no menu lateral) para gerenciar aprovações de novos usuários.", icon="ℹ️")
 def check_system_status(url):
     try:
         start_time = time.time()
@@ -134,126 +128,125 @@ def stop_dev_environment():
     payload = response['Payload'].read().decode() if 'Payload' in response else ''
     return status_code, payload
 
-# Conteúdo principal baseado na opção selecionada
-if option == "Dashboard":
-    if 'system_status' not in st.session_state:
-        st.session_state.system_status = {}
-    if 'last_refresh_time' not in st.session_state:
-        st.session_state.last_refresh_time = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    if 'selected_system_details' not in st.session_state:
-        st.session_state.selected_system_details = None
+# Conteúdo principal - Dashboard
+if 'system_status' not in st.session_state:
+    st.session_state.system_status = {}
+if 'last_refresh_time' not in st.session_state:
+    st.session_state.last_refresh_time = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+if 'selected_system_details' not in st.session_state:
+    st.session_state.selected_system_details = None
 
-    sistemas = {
-        "Content Spot API": "https://dev.contentspot.midiacode.pt/health",
-        "Account API": "https://dev.account.midiacode.pt/ht/",
-        "Content Core API": "https://dev.contentcore.midiacode.pt/hc/",
-        "Midiacode Studio": "https://dev.studio.midiacode.pt/",
-        "Point System Mini-App": "https://dev.point-system.midiacode.pt/",
-        "Midiacode Lite": "https://sandbox.1mc.co/health"
-    }
+sistemas = {
+    "Content Spot API": "https://dev.contentspot.midiacode.pt/health",
+    "Account API": "https://dev.account.midiacode.pt/ht/",
+    "Content Core API": "https://dev.contentcore.midiacode.pt/hc/",
+    "Midiacode Studio": "https://dev.studio.midiacode.pt/",
+    "Point System Mini-App": "https://dev.point-system.midiacode.pt/",
+    "Midiacode Lite": "https://sandbox.1mc.co/health"
+}
 
-    current_time_dt = datetime.now()
-    formatted_current_time = current_time_dt.strftime("%d/%m/%Y %H:%M:%S")
+current_time_dt = datetime.now()
+formatted_current_time = current_time_dt.strftime("%d/%m/%Y %H:%M:%S")
 
-    # Verifica se todos os sistemas estão operacionais
-    all_systems_operational = all(
-        check_system_status(url)[0] for url in sistemas.values()
-    )
+# Verifica se todos os sistemas estão operacionais
+all_systems_operational = all(
+    check_system_status(url)[0] for url in sistemas.values()
+)
 
-    ligado = st.toggle(
-        "Ligado",
-        value=all_systems_operational,
-        key="toggle_env_btn",
-        help="Ligar ou desligar ambiente de desenvolvimento"
-    )
+ligado = st.toggle(
+    "Ligado",
+    value=all_systems_operational,
+    key="toggle_env_btn",
+    help="Ligar ou desligar ambiente de desenvolvimento"
+)
 
-    if 'last_toggle_state' not in st.session_state:
-        st.session_state.last_toggle_state = all_systems_operational
+if 'last_toggle_state' not in st.session_state:
+    st.session_state.last_toggle_state = all_systems_operational
 
-    if ligado != st.session_state.last_toggle_state:
-        if ligado:
-            with st.spinner("Ligando ambiente de desenvolvimento..."):
-                status_code, payload = start_dev_environment()
-                if status_code == 200:
-                    st.success("A solicitação de ligamento do ambiente de desenvolvimento foi recebida com sucesso! Aguarde alguns minutos para ficar totalmente disponível.")
-                else:
-                    st.error(f"Erro ao ligar ambiente: {payload}")
+if ligado != st.session_state.last_toggle_state:
+    if ligado:
+        with st.spinner("Ligando ambiente de desenvolvimento..."):
+            status_code, payload = start_dev_environment()
+            if status_code == 200:
+                st.success("A solicitação de ligamento do ambiente de desenvolvimento foi recebida com sucesso! Aguarde alguns minutos para ficar totalmente disponível.")
+            else:
+                st.error(f"Erro ao ligar ambiente: {payload}")
 
-                slack_sent, slack_error = send_slack_deploy_notification(
-                    action="iniciando",
-                    source="streamlit",
-                    status_code=status_code,
-                    payload=payload,
-                )
-                if not slack_sent and os.getenv("SLACK_DEPLOY_WEBHOOK_URL"):
-                    st.warning(f"Falha ao enviar notificacao para o Slack: {slack_error}")
-        else:
-            with st.spinner("Desligando ambiente de desenvolvimento..."):
-                status_code, payload = stop_dev_environment()
-                if status_code == 200:
-                    st.success("A solicitação de desligamento do ambiente de desenvolvimento foi recebida com sucesso! Aguarde alguns minutos para o ambiente ser totalmente desligado.")
-                else:
-                    st.error(f"Erro ao desligar ambiente: {payload}")
+            slack_sent, slack_error = send_slack_deploy_notification(
+                action="iniciando",
+                source="streamlit",
+                status_code=status_code,
+                payload=payload,
+            )
+            if not slack_sent and os.getenv("SLACK_DEPLOY_WEBHOOK_URL"):
+                st.warning(f"Falha ao enviar notificacao para o Slack: {slack_error}")
+    else:
+        with st.spinner("Desligando ambiente de desenvolvimento..."):
+            status_code, payload = stop_dev_environment()
+            if status_code == 200:
+                st.success("A solicitação de desligamento do ambiente de desenvolvimento foi recebida com sucesso! Aguarde alguns minutos para o ambiente ser totalmente desligado.")
+            else:
+                st.error(f"Erro ao desligar ambiente: {payload}")
 
-                slack_sent, slack_error = send_slack_deploy_notification(
-                    action="desligando",
-                    source="streamlit",
-                    status_code=status_code,
-                    payload=payload,
-                )
-                if not slack_sent and os.getenv("SLACK_DEPLOY_WEBHOOK_URL"):
-                    st.warning(f"Falha ao enviar notificacao para o Slack: {slack_error}")
-        st.session_state.last_toggle_state = ligado
+            slack_sent, slack_error = send_slack_deploy_notification(
+                action="desligando",
+                source="streamlit",
+                status_code=status_code,
+                payload=payload,
+            )
+            if not slack_sent and os.getenv("SLACK_DEPLOY_WEBHOOK_URL"):
+                st.warning(f"Falha ao enviar notificacao para o Slack: {slack_error}")
+    st.session_state.last_toggle_state = ligado
 
-    refresh_clicked = st.button(
-        label="\U0001F504 Atualizar Status",  # Unicode refresh icon
-        key="refresh_btn",
-        help="Atualizar status dos sistemas",   
-        type="primary",  
-    )
+refresh_clicked = st.button(
+    label="\U0001F504 Atualizar Status",  # Unicode refresh icon
+    key="refresh_btn",
+    help="Atualizar status dos sistemas",   
+    type="primary",  
+)
 
-    if refresh_clicked:
-        st.session_state.last_refresh_time = formatted_current_time
-        for nome in sistemas.keys():
-            if nome in st.session_state.system_status:
-                st.session_state.system_status[nome]['force_refresh'] = True
-        st.rerun()
+if refresh_clicked:
+    st.session_state.last_refresh_time = formatted_current_time
+    for nome in sistemas.keys():
+        if nome in st.session_state.system_status:
+            st.session_state.system_status[nome]['force_refresh'] = True
+    st.rerun()
 
-    st.markdown("""
-    <div style="margin-bottom: 16px; display: flex; align-items: center; gap: 20px;">
-        <div style="display: flex; align-items: center;"><span class="status-indicator-dot operational-dot"></span><span>Operacional</span></div>
-        <div style="display: flex; align-items: center;"><span class="status-indicator-dot disruption-dot"></span><span>Indisponível</span></div>
-    </div>
-    """, unsafe_allow_html=True)
+st.markdown("""
+<div style="margin-bottom: 16px; display: flex; align-items: center; gap: 20px;">
+    <div style="display: flex; align-items: center;"><span class="status-indicator-dot operational-dot"></span><span>Operacional</span></div>
+    <div style="display: flex; align-items: center;"><span class="status-indicator-dot disruption-dot"></span><span>Indisponível</span></div>
+</div>
+""", unsafe_allow_html=True)
 
-    cols = st.columns([3, 2, 2])
-    cols[0].markdown("**Serviço**")
-    cols[1].markdown("**Status Atual**")
-    cols[2].markdown("**Tempo de Resposta**")
+cols = st.columns([3, 2, 2])
+cols[0].markdown("**Serviço**")
+cols[1].markdown("**Status Atual**")
+cols[2].markdown("**Tempo de Resposta**")
 
-    for nome, url in sistemas.items():
-        force_refresh = st.session_state.system_status.get(nome, {}).get('force_refresh', False)
-        if force_refresh or nome not in st.session_state.system_status:
-            status, response_time = check_system_status(url)
-            st.session_state.system_status[nome] = {
-                "status": status,
-                "last_check": formatted_current_time,
-                "response_time": response_time,
-                "force_refresh": False
-            }
-        current_status_info = st.session_state.system_status[nome]
-        status = current_status_info["status"]
-        response_time = current_status_info["response_time"]
-        status_text = "Operacional" if status else "Indisponível"
-        status_class = "status-operational" if status else "status-disruption"
-        status_dot_class = "operational-dot" if status else "disruption-dot"
-        tempo_resposta_text = f"{response_time} ms" if response_time is not None else "N/A"
-        row_cols = st.columns([3, 2, 2])
-        row_cols[0].markdown(f"**{nome}**")
-        row_cols[1].markdown(f'<span class="status-indicator-dot {status_dot_class}"></span><span class="{status_class}">{status_text}</span>', unsafe_allow_html=True)
-        row_cols[2].markdown(tempo_resposta_text)
+for nome, url in sistemas.items():
+    force_refresh = st.session_state.system_status.get(nome, {}).get('force_refresh', False)
+    if force_refresh or nome not in st.session_state.system_status:
+        status, response_time = check_system_status(url)
+        st.session_state.system_status[nome] = {
+            "status": status,
+            "last_check": formatted_current_time,
+            "response_time": response_time,
+            "force_refresh": False
+        }
+    current_status_info = st.session_state.system_status[nome]
+    status = current_status_info["status"]
+    response_time = current_status_info["response_time"]
+    status_text = "Operacional" if status else "Indisponível"
+    status_class = "status-operational" if status else "status-disruption"
+    status_dot_class = "operational-dot" if status else "disruption-dot"
+    tempo_resposta_text = f"{response_time} ms" if response_time is not None else "N/A"
+    row_cols = st.columns([3, 2, 2])
+    row_cols[0].markdown(f"**{nome}**")
+    row_cols[1].markdown(f'<span class="status-indicator-dot {status_dot_class}"></span><span class="{status_class}">{status_text}</span>', unsafe_allow_html=True)
+    row_cols[2].markdown(tempo_resposta_text)
 
-    st.caption(f"Última atualização: {st.session_state.last_refresh_time}")
+st.caption(f"Última atualização: {st.session_state.last_refresh_time}")
 
 # Rodapé
 st.markdown("""
