@@ -118,6 +118,7 @@ st.markdown(
     .backup-badge--ok       { color: #166534; background: #dcfce7; border: 1px solid #86efac; }
     .backup-badge--partial  { color: #92400e; background: #fef3c7; border: 1px solid #fcd34d; }
     .backup-badge--error    { color: #991b1b; background: #fee2e2; border: 1px solid #fca5a5; }
+    .backup-badge--unsupported { color: #1e3a8a; background: #dbeafe; border: 1px solid #93c5fd; }
     .backup-badge--unknown  { color: #374151; background: #f3f4f6; border: 1px solid #d1d5db; }
 
     .backup-meta-label {
@@ -194,13 +195,13 @@ st.markdown(
     """
     <div class="ops-page-header">
         <div>
-            <h1 class="ops-page-title">Evidências de Backup</h1>
+            <h1 class="ops-page-title">Backup</h1>
             <div class="ops-page-subtitle">
                 Relatório dos últimos backups e snapshots dos recursos AWS monitorados.
                 Os dados são coletados em tempo real via AWS CLI e API de snapshots.
             </div>
         </div>
-        <div class="ops-page-badge">Backup</div>
+        <div class="ops-page-badge">Produção</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -251,6 +252,67 @@ def _status_priority(status: str) -> int:
         "collected": 3,
     }
     return priority.get(status, 4)
+
+
+def _build_status_overview(reports: list[dict]) -> str:
+    status_counts = {
+        "ok": 0,
+        "partial": 0,
+        "error": 0,
+        "unsupported": 0,
+        "unknown": 0,
+    }
+
+    for report in reports:
+        status = str(report.get("status") or "unknown")
+        if status in {"ok", "collected"}:
+            status_counts["ok"] += 1
+        elif status == "partial":
+            status_counts["partial"] += 1
+        elif status == "error":
+            status_counts["error"] += 1
+        elif status == "resource_not_supported_by_aws_backup":
+            status_counts["unsupported"] += 1
+        else:
+            status_counts["unknown"] += 1
+
+    chips: list[str] = []
+    if status_counts["error"]:
+        chips.append(
+            '<span class="backup-badge backup-badge--error">'
+            f'❌ Erro na coleta: {status_counts["error"]}</span>'
+        )
+    if status_counts["partial"]:
+        chips.append(
+            '<span class="backup-badge backup-badge--partial">'
+            f'⚠️ Dados parciais: {status_counts["partial"]}</span>'
+        )
+    if status_counts["unsupported"]:
+        chips.append(
+            '<span class="backup-badge backup-badge--unsupported">'
+            f'ℹ️ Não suportado no AWS Backup: {status_counts["unsupported"]}</span>'
+        )
+    if status_counts["ok"]:
+        chips.append(
+            '<span class="backup-badge backup-badge--ok">'
+            f'✅ Backup disponível: {status_counts["ok"]}</span>'
+        )
+    if status_counts["unknown"]:
+        chips.append(
+            '<span class="backup-badge backup-badge--unknown">'
+            f'— Status desconhecido: {status_counts["unknown"]}</span>'
+        )
+
+    if not chips:
+        return ""
+
+    chips_html = "".join(chips)
+    return (
+        f'<div class="backup-legend">{chips_html}</div>'
+        '<p class="backup-help-text">'
+        'A listagem está ordenada por criticidade: erros e dados parciais aparecem primeiro.'
+        '</p>'
+    )
 
 
 def _format_datetime(raw: str | None) -> str:
@@ -876,20 +938,9 @@ if summary.get("resources_with_error", 0) > 0:
         "Eles aparecem no topo para facilitar diagnóstico."
     )
 
-st.markdown(
-    """
-    <div class="backup-legend">
-        <span class="backup-badge backup-badge--ok">✅ Backup disponível</span>
-        <span class="backup-badge backup-badge--partial">⚠️ Dados parciais</span>
-        <span class="backup-badge backup-badge--error">❌ Erro na coleta</span>
-        <span class="backup-badge backup-badge--unknown">— Status desconhecido</span>
-    </div>
-    <p class="backup-help-text">
-        A listagem está ordenada por criticidade: erros e dados parciais aparecem primeiro.
-    </p>
-    """,
-    unsafe_allow_html=True,
-)
+status_overview = _build_status_overview(reports)
+if status_overview:
+    st.markdown(status_overview, unsafe_allow_html=True)
 
 st.markdown("---")
 
