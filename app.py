@@ -17,7 +17,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-st.logo("icone_midiacode.png", link="https://midiacode.com/")
 
 # Verificar autenticação - deve ser chamado antes de qualquer conteúdo
 display_auth_ui()
@@ -29,13 +28,12 @@ st.markdown("""
         font-size: 24px;
         font-weight: 500;
         color: #202124;
-        display: flex;
-        align-items: center;
         margin-bottom: 4px;
     }
-    .google-header-logo {
-        font-size: 28px;
-        margin-right: 10px;
+    .google-header-brand {
+        font-size: 12px;
+        color: #5f6368;
+        margin-bottom: 16px;
     }
     .google-header-subtitle {
         font-size: 14px;
@@ -89,8 +87,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Cabeçalho
-st.markdown('<div class="google-header-title"><span class="google-header-logo">⚙️</span>Midiacode Ops Manager</div>', unsafe_allow_html=True)
-st.markdown('<div class="google-header-subtitle">Este painel fornece informações de status sobre os serviços do ambiente de desenvolvimento do Midiacode.<br>Verifique aqui para ver o status atual dos serviços listados abaixo.</div>', unsafe_allow_html=True)
+st.markdown('<div class="google-header-title">Painel de Sandbox</div>', unsafe_allow_html=True)
+st.markdown('<div class="google-header-brand">Midiacode</div>', unsafe_allow_html=True)
+st.markdown('<div class="google-header-subtitle">Este painel fornece informações de status sobre os serviços do ambiente de sandbox do Midiacode.<br>Verifique aqui para ver o status atual dos serviços listados abaixo.</div>', unsafe_allow_html=True)
 
 
 def check_system_status(url):

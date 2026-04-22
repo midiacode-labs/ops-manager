@@ -540,6 +540,8 @@ def render_sidebar():
     Renderiza o sidebar padrão da aplicação para usuários autenticados.
     Inclui logo, título, navegação com ícones e informações do usuário com logout.
     """
+    st.logo(ICON_PATH, link="https://midiacode.com/")
+
     with st.sidebar:
         # Ocultar a navegação automática do Streamlit
         st.markdown(
@@ -551,22 +553,18 @@ def render_sidebar():
             unsafe_allow_html=True,
         )
 
-        # Logo + título
-        col_logo, col_title = st.columns([1, 2.5])
-        with col_logo:
-            st.image(ICON_PATH, width=52)
-        with col_title:
-            st.markdown(
-                "<div style='padding-top:6px;font-size:17px;font-weight:700;"
-                "color:#0067ff;line-height:1.2'>Ops Manager</div>"
-                "<div style='font-size:11px;color:#888;margin-top:2px'>Midiacode</div>",
-                unsafe_allow_html=True,
-            )
+        # Título da aplicação
+        st.markdown(
+            "<div style='font-size:17px;font-weight:700;"
+            "color:#0067ff;line-height:1.2'>Ops Manager</div>"
+            "<div style='font-size:11px;color:#888;margin-top:2px'>Midiacode</div>",
+            unsafe_allow_html=True,
+        )
 
         st.divider()
 
         # Navegação
-        st.page_link("app.py", label="Dashboard", icon="🏠")
+        st.page_link("app.py", label="Painel de Sandbox", icon="🏠")
         st.page_link("pages/manage_users.py", label="Gestão de Usuários", icon="👥")
 
         st.divider()
