@@ -231,6 +231,23 @@ def _build_resources() -> list[BackupResource]:
             BackupResource(resource_type="rds_cluster", resource_arn=rds_contentcore_api_arn)
         )
 
+    dynamodb_resource_arns_raw = os.getenv("DYNAMODB_RESOURCE_ARNS", "").strip()
+    if dynamodb_resource_arns_raw:
+        dynamodb_arns = [
+            value.strip()
+            for value in dynamodb_resource_arns_raw.split(",")
+            if value and value.strip()
+        ]
+    else:
+        dynamodb_arns = []
+
+    seen_dynamodb_arns: set[str] = set()
+    for dynamodb_arn in dynamodb_arns:
+        if dynamodb_arn in seen_dynamodb_arns:
+            continue
+        seen_dynamodb_arns.add(dynamodb_arn)
+        resources.append(BackupResource(resource_type="dynamodb", resource_arn=dynamodb_arn))
+
     return resources
 
 
@@ -687,6 +704,171 @@ def _render_generic_report(report: dict) -> None:
                 st.error(error.get("message", str(error)))
 
 
+def _render_dynamodb_report(report: dict) -> None:
+    resource_arn = report.get("resource_arn", "")
+    status = report.get("status", "unknown")
+    latest_backup = report.get("latest_backup") or {}
+    evidence = report.get("dynamodb_backup_evidence", {}) or {}
+    table_description = evidence.get("table_description", {}) or {}
+    continuous_backup = evidence.get("continuous_backup_description", {}) or {}
+    native_summary = evidence.get("native_backup_summary", {}) or {}
+
+    with st.container(border=True):
+        st.markdown(
+            f"""
+            <div class="resource-group-header">
+                <div>
+                    <div class="resource-group-title">🧱 DynamoDB</div>
+                    <div class="resource-group-subtitle">{resource_arn}</div>
+                </div>
+                <div>{_status_badge(status)}</div>
+            </div>
+            <hr class="resource-divider" />
+            """,
+            unsafe_allow_html=True,
+        )
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown(
+                '<div class="backup-meta-label">Tabela</div>',
+                unsafe_allow_html=True,
+            )
+            table_name = table_description.get("table_name") or "—"
+            st.markdown(
+                f'<div class="backup-meta-value">{table_name}</div>',
+                unsafe_allow_html=True,
+            )
+        with col2:
+            st.markdown(
+                '<div class="backup-meta-label">Último Backup</div>',
+                unsafe_allow_html=True,
+            )
+            backup_time = latest_backup.get("creation_date") or latest_backup.get("start_time")
+            st.markdown(
+                f'<div class="backup-meta-value">{_format_datetime(backup_time)}</div>',
+                unsafe_allow_html=True,
+            )
+        with col3:
+            st.markdown('<div class="backup-meta-label">Estado</div>', unsafe_allow_html=True)
+            status_label = latest_backup.get("status") or latest_backup.get("state") or "—"
+            st.markdown(
+                f'<div class="backup-meta-value">{status_label}</div>',
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        with st.expander("Ver detalhes", expanded=False):
+            st.markdown("**Coleta e Estratégia**")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.markdown(
+                    '<div class="backup-meta-label">Coletado em</div>',
+                    unsafe_allow_html=True,
+                )
+                collected_at_label = _format_datetime(report.get("collected_at"))
+                st.markdown(
+                    f'<div class="backup-meta-value">{collected_at_label}</div>',
+                    unsafe_allow_html=True,
+                )
+            with c2:
+                st.markdown(
+                    '<div class="backup-meta-label">Serviço de Backup</div>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    f'<div class="backup-meta-value">{report.get("backup_service") or "—"}</div>',
+                    unsafe_allow_html=True,
+                )
+            with c3:
+                st.markdown(
+                    '<div class="backup-meta-label">Estratégia</div>',
+                    unsafe_allow_html=True,
+                )
+                strategy_label = report.get("collection_strategy") or "—"
+                st.markdown(
+                    f'<div class="backup-meta-value">{strategy_label}</div>',
+                    unsafe_allow_html=True,
+                )
+
+            st.markdown("---")
+            st.markdown("**Tabela DynamoDB**")
+            created_at = _format_datetime(table_description.get("creation_date_time"))
+            st.markdown(
+                f"- **Nome:** `{table_description.get('table_name') or '—'}`\n"
+                f"- **Status da Tabela:** `{table_description.get('table_status') or '—'}`\n"
+                f"- **Criada em:** `{created_at}`\n"
+                f"- **Itens:** `{table_description.get('item_count') or 0}`\n"
+                f"- **Tamanho (bytes):** `{table_description.get('table_size_bytes') or 0}`\n"
+                f"- **Modo de cobrança:** `{table_description.get('billing_mode') or '—'}`\n"
+                f"- **Criptografia (SSE):** `{table_description.get('sse_status') or '—'}`\n"
+                f"- **Tipo SSE:** `{table_description.get('sse_type') or '—'}`"
+            )
+
+            st.markdown("---")
+            st.markdown("**Backup Contínuo (PITR)**")
+            st.markdown(
+                f"- **ContinuousBackupsStatus:** `"
+                f"{continuous_backup.get('continuous_backups_status') or '—'}`\n"
+                f"- **PointInTimeRecoveryStatus:** `"
+                f"{continuous_backup.get('point_in_time_recovery_status') or '—'}`\n"
+                f"- **EarliestRestorableDateTime:** `"
+                f"{_format_datetime(continuous_backup.get('earliest_restorable_datetime'))}`\n"
+                f"- **LatestRestorableDateTime:** `"
+                f"{_format_datetime(continuous_backup.get('latest_restorable_datetime'))}`"
+            )
+
+            st.markdown("---")
+            st.markdown("**Último Backup Selecionado**")
+            st.markdown(
+                f"- **Fonte:** `{latest_backup.get('source') or '—'}`\n"
+                f"- **Backup ARN/Recovery Point ARN:** `"
+                f"{latest_backup.get('backup_arn_or_recovery_point_arn') or '—'}`\n"
+                f"- **Tipo:** `{latest_backup.get('backup_type') or '—'}`\n"
+                f"- **Status:** `{latest_backup.get('status') or '—'}`\n"
+                f"- **Criado em:** `{_format_datetime(latest_backup.get('creation_date'))}`"
+            )
+
+            st.markdown("---")
+            st.markdown("**Backups Nativos DynamoDB**")
+            st.markdown(
+                f"- **Backups encontrados:** `{native_summary.get('backups_found') or 0}`"
+            )
+
+            sample_backups = native_summary.get("sample_backups") or []
+            if sample_backups:
+                import pandas as pd
+
+                rows = []
+                for backup in sample_backups:
+                    rows.append(
+                        {
+                            "Nome": backup.get("BackupName") or "—",
+                            "Status": backup.get("BackupStatus") or "—",
+                            "Tipo": backup.get("BackupType") or "—",
+                            "Criado em": _format_datetime(
+                                backup.get("BackupCreationDateTime")
+                            ),
+                            "ARN": backup.get("BackupArn") or "—",
+                        }
+                    )
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+            collection_errors = evidence.get("collection_errors") or []
+            if collection_errors:
+                st.markdown("---")
+                st.markdown("**Erros de Coleta**")
+                for error in collection_errors:
+                    stage = error.get("stage") or error.get("type") or "coleta"
+                    message = error.get("message") or "Erro não identificado."
+                    st.error(f"{stage}: {message}")
+
+            if report.get("error"):
+                st.markdown("---")
+                st.error(report.get("error", {}).get("message", "Erro não identificado."))
+
+
 def _render_rds_report(report: dict) -> None:
     resource_type = _resource_type_label(report.get("resource_type", ""))
     resource_arn = report.get("resource_arn", "")
@@ -865,7 +1047,8 @@ resources = _build_resources()
 if not resources:
     st.warning(
         "Nenhum recurso configurado. Defina `OPENSEARCH_RESOURCE_ARN`, "
-        "`RDS_ACCOUNT_API_RESOURCE_ARN` ou `RDS_CONTENTCORE_API_RESOURCE_ARN` no arquivo `.env`."
+        "`RDS_ACCOUNT_API_RESOURCE_ARN`, `RDS_CONTENTCORE_API_RESOURCE_ARN` "
+        "ou `DYNAMODB_RESOURCE_ARNS` no arquivo `.env`."
     )
     st.stop()
 
@@ -968,6 +1151,8 @@ for index, report in enumerate(ordered_reports, start=1):
         _render_opensearch_report(report)
     elif resource_type in {"rds", "rds_instance", "rds_cluster"}:
         _render_rds_report(report)
+    elif resource_type == "dynamodb":
+        _render_dynamodb_report(report)
     else:
         _render_generic_report(report)
 

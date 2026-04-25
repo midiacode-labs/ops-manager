@@ -178,12 +178,13 @@ Este script invoca uma função Lambda da AWS para parar o ambiente de desenvolv
 
 ### Relatório de Evidências de Backups
 
-Para coletar evidências dos últimos backups disponíveis por recurso (OpenSearch + RDS):
+Para coletar evidências dos últimos backups disponíveis por recurso (OpenSearch + RDS + DynamoDB):
 
 ```bash
-export OPENSEARCH_RESOURCE_ARN=arn:aws:es:us-east-1:578416043364:domain/search-service
-export RDS_ACCOUNT_API_RESOURCE_ARN=arn:aws:rds:us-east-1:578416043364:db:account-api
-export RDS_CONTENTCORE_API_RESOURCE_ARN=arn:aws:rds:us-east-1:578416043364:cluster:contentcore-api
+export OPENSEARCH_RESOURCE_ARN=arn:aws:es:<region>:<account-id>:domain/<opensearch-domain>
+export RDS_ACCOUNT_API_RESOURCE_ARN=arn:aws:rds:<region>:<account-id>:db:<rds-instance-id>
+export RDS_CONTENTCORE_API_RESOURCE_ARN=arn:aws:rds:<region>:<account-id>:cluster:<rds-cluster-id>
+export DYNAMODB_RESOURCE_ARNS=arn:aws:dynamodb:<region>:<account-id>:table/<table-1>,arn:aws:dynamodb:<region>:<account-id>:table/<table-2>
 python3 backup_evidence_report.py
 ```
 
@@ -192,6 +193,7 @@ Observação: os ARNs padrão são lidos das variáveis de ambiente abaixo para 
 - `OPENSEARCH_RESOURCE_ARN`
 - `RDS_ACCOUNT_API_RESOURCE_ARN` (instância RDS)
 - `RDS_CONTENTCORE_API_RESOURCE_ARN` (cluster RDS/Aurora)
+- `DYNAMODB_RESOURCE_ARNS` (lista de ARNs de tabelas DynamoDB, separada por vírgula)
 
 O script gera por padrão o arquivo `backup_evidence_report.json` com:
 
@@ -204,8 +206,8 @@ Para incluir mais recursos, por exemplo RDS e DynamoDB:
 
 ```bash
 python3 backup_evidence_report.py \
-   --add-resource rds arn:aws:rds:us-east-1:578416043364:db:meu-banco \
-   --add-resource dynamodb arn:aws:dynamodb:us-east-1:578416043364:table/minha-tabela
+   --add-resource rds arn:aws:rds:<region>:<account-id>:db:<rds-instance-id> \
+   --add-resource dynamodb arn:aws:dynamodb:<region>:<account-id>:table/<table-name>
 ```
 
 Parâmetros úteis:
