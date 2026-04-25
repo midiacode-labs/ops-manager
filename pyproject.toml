@@ -1,6 +1,6 @@
 [project]
 name = "ops-manager"
-version = "0.3.0"
+version = "0.4.0"
 description = "Streamlit application for operations management"
 authors = [
     {name = "Luiz Gustavo Gavinho",email = "lgavinho@midiacode.com"}
