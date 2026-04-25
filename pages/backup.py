@@ -5,6 +5,7 @@ Exibe o relatório dos últimos backups dos recursos AWS monitorados.
 
 import logging
 import os
+from datetime import datetime, timezone
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -273,6 +274,46 @@ def _status_priority(status: str) -> int:
     return priority.get(status, 4)
 
 
+def _parse_iso_datetime(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        normalized = raw.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _get_latest_backup_datetime(report: dict) -> datetime | None:
+    latest_backup = report.get("latest_backup") or {}
+    resource_type = str(report.get("resource_type") or "").lower()
+
+    candidate_fields: list[str]
+    if resource_type == "opensearch":
+        candidate_fields = ["start_time"]
+    elif resource_type in {"rds", "rds_instance", "rds_cluster"}:
+        candidate_fields = ["snapshot_create_time", "creation_date", "start_time"]
+    else:
+        candidate_fields = ["creation_date", "start_time", "snapshot_create_time"]
+
+    for field in candidate_fields:
+        parsed = _parse_iso_datetime(latest_backup.get(field))
+        if parsed:
+            return parsed
+    return None
+
+
+def _is_stale_backup(report: dict) -> bool:
+    backup_datetime = _get_latest_backup_datetime(report)
+    if not backup_datetime:
+        return False
+    return backup_datetime.date() != datetime.now(timezone.utc).date()
+
+
+def _is_effective_partial(report: dict) -> bool:
+    return str(report.get("status") or "") == "partial" or _is_stale_backup(report)
+
+
 def _build_status_overview(reports: list[dict]) -> str:
     status_counts = {
         "ok": 0,
@@ -284,10 +325,10 @@ def _build_status_overview(reports: list[dict]) -> str:
 
     for report in reports:
         status = str(report.get("status") or "unknown")
-        if status in {"ok", "collected"}:
-            status_counts["ok"] += 1
-        elif status == "partial":
+        if _is_effective_partial(report):
             status_counts["partial"] += 1
+        elif status in {"ok", "collected"}:
+            status_counts["ok"] += 1
         elif status == "error":
             status_counts["error"] += 1
         elif status == "resource_not_supported_by_aws_backup":
@@ -339,11 +380,23 @@ def _format_datetime(raw: str | None) -> str:
         return "—"
     try:
         normalized = raw.replace("Z", "+00:00")
-        from datetime import datetime, timezone
         dt = datetime.fromisoformat(normalized).astimezone(timezone.utc)
         return dt.strftime("%d/%m/%Y %H:%M UTC")
     except Exception:
         return raw
+
+
+def _render_stale_backup_warning(report: dict, label: str) -> None:
+    if not _is_stale_backup(report):
+        return
+
+    backup_datetime = _get_latest_backup_datetime(report)
+    backup_label = backup_datetime.strftime("%d/%m/%Y") if backup_datetime else "data indisponível"
+    today_label = datetime.now(timezone.utc).strftime("%d/%m/%Y")
+    st.warning(
+        f"⚠️ {label} fora do dia atual (UTC). Último registro: {backup_label}. "
+        f"Hoje (UTC): {today_label}."
+    )
 
 
 def _resource_type_label(resource_type: str) -> str:
@@ -396,6 +449,8 @@ def _render_opensearch_report(report: dict) -> None:
             """,
             unsafe_allow_html=True,
         )
+
+        _render_stale_backup_warning(report, "Último Snapshot")
 
         # Métricas rápidas
         col1, col2, col3 = st.columns(3)
@@ -669,6 +724,8 @@ def _render_generic_report(report: dict) -> None:
             unsafe_allow_html=True,
         )
 
+        _render_stale_backup_warning(report, "Último Backup")
+
         col1, col2 = st.columns(2)
         with col1:
             st.markdown(
@@ -727,6 +784,8 @@ def _render_dynamodb_report(report: dict) -> None:
             """,
             unsafe_allow_html=True,
         )
+
+        _render_stale_backup_warning(report, "Último Backup")
 
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -892,6 +951,8 @@ def _render_rds_report(report: dict) -> None:
             """,
             unsafe_allow_html=True,
         )
+
+        _render_stale_backup_warning(report, "Último Snapshot")
 
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -1081,7 +1142,6 @@ with col_pdf:
             "STREAMLIT_REDIRECT_URL", "http://localhost:8501"
         )
         pdf_bytes = generate_pdf(report_data, system_url=system_url)
-        from datetime import datetime, timezone
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
         st.download_button(
             label="📄 Exportar PDF",
@@ -1097,7 +1157,7 @@ with col_pdf:
 st.markdown(f"*Relatório gerado em: {_format_datetime(generated_at)}*")
 st.markdown("<br>", unsafe_allow_html=True)
 
-reports_with_partial = sum(1 for item in reports if item.get("status") == "partial")
+reports_with_partial = sum(1 for item in reports if _is_effective_partial(item))
 reports_unsupported = sum(
     1
     for item in reports
