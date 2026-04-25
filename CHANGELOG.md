@@ -4,6 +4,24 @@ Todas as mudanças relevantes deste projeto serão documentadas neste arquivo.
 
 O formato segue o padrão [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto adota [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.0] - 2026-04-25
+
+### Adicionado
+- Suporte à coleta de evidências de backup do DynamoDB, incluindo metadados da tabela, backups contínuos e backups nativos via AWS CLI.
+- Inclusão de recursos DynamoDB configuráveis por `DYNAMODB_RESOURCE_ARNS` no relatório consolidado e na página de backup.
+- Utilitário `app_version.py` para leitura centralizada da versão da aplicação a partir do `pyproject.toml`.
+- Exibição da versão atual da aplicação no dashboard principal e em páginas operacionais.
+- Inclusão do pacote `awscli` em `packages.txt` e `requirements.txt` para suportar a coleta operacional de evidências.
+
+### Alterado
+- Página de backup aprimorada com parsing mais robusto de datas, detecção de backups desatualizados e alertas visuais para dados parciais ou antigos.
+- Relatório PDF de evidências de backup expandido para refletir os novos campos e recursos monitorados.
+- Fluxo de aprovação e revogação de usuários em `pages/manage_users.py` reforçado com validações de sessão, tratamento de erros e mensagens mais claras.
+- Notificações do Slack ajustadas para detectar com mais precisão ações de início e parada do ambiente, evitando falso positivo na escolha do emoji.
+
+### Documentação
+- `README.md` atualizado com instruções de configuração e uso das evidências de backup para DynamoDB e dependências operacionais.
+
 ## [0.3.0] - 2026-04-22
 
 ### Adicionado
