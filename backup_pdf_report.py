@@ -741,6 +741,162 @@ def _build_rds_section(report: dict, styles: dict) -> list:
     return elements
 
 
+def _build_dynamodb_section(report: dict, styles: dict) -> list:
+    """Builds flowables for DynamoDB backup evidence."""
+    elements: list = []
+    resource_arn = report.get("resource_arn", "—")
+    status = report.get("status", "unknown")
+    latest_backup = report.get("latest_backup") or {}
+    evidence = report.get("dynamodb_backup_evidence", {}) or {}
+    table_description = evidence.get("table_description", {}) or {}
+    continuous_backup = evidence.get("continuous_backup_description", {}) or {}
+    native_summary = evidence.get("native_backup_summary", {}) or {}
+
+    header_data = [
+        [
+            Paragraph("DYNAMODB", styles["section"]),
+            Paragraph(_status_label(status), styles[_status_style_key(status)]),
+        ]
+    ]
+    header_t = Table(header_data, colWidths=[CONTENT_W * 0.75, CONTENT_W * 0.25])
+    header_t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), LIGHT_GRAY),
+                ("BOX", (0, 0), (-1, -1), 0.5, BORDER_GRAY),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
+    elements.append(header_t)
+    elements.append(Spacer(1, 0.2 * cm))
+
+    elements.append(Paragraph("ARN do Recurso", styles["label"]))
+    elements.append(Paragraph(resource_arn, styles["mono"]))
+    elements.append(Spacer(1, 0.3 * cm))
+
+    elements.append(Paragraph("Coleta e Estratégia", styles["section"]))
+    elements.append(
+        _kv_table(
+            [
+                ("Coletado em", _fmt_dt(report.get("collected_at"))),
+                ("Serviço de Backup", report.get("backup_service") or "—"),
+                ("Estratégia", report.get("collection_strategy") or "—"),
+                ("Fonte do último backup", latest_backup.get("source") or "—"),
+            ],
+            styles,
+        )
+    )
+    elements.append(Spacer(1, 0.3 * cm))
+
+    elements.append(Paragraph("Tabela DynamoDB", styles["section"]))
+    elements.append(
+        _kv_table(
+            [
+                ("Nome", table_description.get("table_name") or evidence.get("table_name") or "—"),
+                ("Status da tabela", table_description.get("table_status") or "—"),
+                ("Criada em", _fmt_dt(table_description.get("creation_date_time"))),
+                ("Itens", str(table_description.get("item_count") or 0)),
+                ("Tamanho (bytes)", str(table_description.get("table_size_bytes") or 0)),
+                ("Modo de cobrança", table_description.get("billing_mode") or "—"),
+                ("Criptografia (SSE)", table_description.get("sse_status") or "—"),
+                ("Tipo SSE", table_description.get("sse_type") or "—"),
+            ],
+            styles,
+        )
+    )
+    elements.append(Spacer(1, 0.3 * cm))
+
+    elements.append(Paragraph("Backup Contínuo (PITR)", styles["section"]))
+    elements.append(
+        _kv_table(
+            [
+                (
+                    "ContinuousBackupsStatus",
+                    continuous_backup.get("continuous_backups_status") or "—",
+                ),
+                (
+                    "PointInTimeRecoveryStatus",
+                    continuous_backup.get("point_in_time_recovery_status") or "—",
+                ),
+                (
+                    "EarliestRestorableDateTime",
+                    _fmt_dt(continuous_backup.get("earliest_restorable_datetime")),
+                ),
+                (
+                    "LatestRestorableDateTime",
+                    _fmt_dt(continuous_backup.get("latest_restorable_datetime")),
+                ),
+            ],
+            styles,
+        )
+    )
+    elements.append(Spacer(1, 0.3 * cm))
+
+    elements.append(Paragraph("Último Backup Selecionado", styles["section"]))
+    elements.append(
+        _kv_table(
+            [
+                (
+                    "Backup ARN / Recovery Point ARN",
+                    latest_backup.get("backup_arn_or_recovery_point_arn") or "—",
+                ),
+                ("Status", latest_backup.get("status") or "—"),
+                ("Tipo", latest_backup.get("backup_type") or "—"),
+                ("Criado em", _fmt_dt(latest_backup.get("creation_date"))),
+            ],
+            styles,
+        )
+    )
+
+    elements.append(Spacer(1, 0.3 * cm))
+    elements.append(Paragraph("Backups Nativos DynamoDB", styles["section"]))
+    latest_native = native_summary.get("latest_backup") or {}
+    elements.append(
+        _kv_table(
+            [
+                ("Backups encontrados", str(native_summary.get("backups_found") or 0)),
+                (
+                    "Último backup nativo",
+                    latest_native.get("backup_name")
+                    or latest_native.get("backup_arn_or_recovery_point_arn")
+                    or "—",
+                ),
+                ("Status último nativo", latest_native.get("status") or "—"),
+                ("Tipo último nativo", latest_native.get("backup_type") or "—"),
+                ("Criado em (nativo)", _fmt_dt(latest_native.get("creation_date"))),
+            ],
+            styles,
+        )
+    )
+
+    collection_errors = evidence.get("collection_errors") or []
+    if collection_errors:
+        elements.append(Spacer(1, 0.2 * cm))
+        elements.append(Paragraph("Erros de Coleta", styles["section"]))
+        for error in collection_errors:
+            stage = error.get("stage") or error.get("type") or "coleta"
+            message = error.get("message") or "Erro não identificado."
+            elements.append(Paragraph(f"{stage}: {message}", styles["badge_error"]))
+
+    top_level_error = report.get("error")
+    if top_level_error:
+        elements.append(Spacer(1, 0.2 * cm))
+        msg = (
+            top_level_error.get("message", str(top_level_error))
+            if isinstance(top_level_error, dict)
+            else str(top_level_error)
+        )
+        elements.append(Paragraph(f"Erro: {msg}", styles["badge_error"]))
+
+    return elements
+
+
 # ── Página com cabeçalho e rodapé ─────────────────────────────────────────────────
 
 
@@ -895,6 +1051,8 @@ def generate_pdf(report_data: dict, system_url: str = "") -> bytes:
             elements.extend(_build_opensearch_section(report, styles))
         elif resource_type in {"rds", "rds_instance", "rds_cluster"}:
             elements.extend(_build_rds_section(report, styles))
+        elif resource_type == "dynamodb":
+            elements.extend(_build_dynamodb_section(report, styles))
         else:
             elements.extend(_build_generic_section(report, styles))
 

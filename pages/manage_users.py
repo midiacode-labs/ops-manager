@@ -10,6 +10,7 @@ import os
 from datetime import datetime
 from uuid import uuid4
 from auth import get_supabase_client, display_auth_ui, get_current_user
+from app_version import get_app_version
 
 
 LOGGER = logging.getLogger("ops_manager.manage_users")
@@ -21,6 +22,7 @@ if not LOGGER.handlers:
     LOGGER.addHandler(_handler)
 LOGGER.setLevel(os.getenv("APP_LOG_LEVEL", os.getenv("AUTH_LOG_LEVEL", "INFO")).upper())
 LOGGER.propagate = False
+APP_VERSION = get_app_version()
 
 
 def _render_manage_users_styles():
@@ -410,26 +412,37 @@ with tab1:
                     type="primary",
                     use_container_width=True,
                 ):
+                    _approved_ok = False
                     try:
                         _log_page(
                             logging.INFO,
                             "manage_users.user_approve.requested",
                             target_email=_mask_email(user.get("email", "")),
                         )
-                        client.table("authorized_users").update({
+                        result = client.table("authorized_users").update({
                             "approved": True,
                             "approved_by": current_user.email,
                             "approved_at": datetime.utcnow().isoformat(),
                         }).eq("email", user.get("email")).execute()
 
-                        _log_page(
-                            logging.INFO,
-                            "manage_users.user_approve.success",
-                            target_email=_mask_email(user.get("email", "")),
-                        )
-
-                        st.success(f"✅ Usuário {user.get('email')} aprovado com sucesso!")
-                        st.rerun()
+                        if not result.data:
+                            _log_page(
+                                logging.WARNING,
+                                "manage_users.user_approve.no_rows_updated",
+                                target_email=_mask_email(user.get("email", "")),
+                            )
+                            st.error(
+                                "❌ Nenhuma linha atualizada. Verifique se o seu usuário "
+                                "tem permissão de aprovação no banco de dados."
+                            )
+                        else:
+                            _log_page(
+                                logging.INFO,
+                                "manage_users.user_approve.success",
+                                target_email=_mask_email(user.get("email", "")),
+                            )
+                            st.success(f"✅ Usuário {user.get('email')} aprovado com sucesso!")
+                            _approved_ok = True
 
                     except Exception as e:
                         LOGGER.exception("Erro ao aprovar usuário")
@@ -440,6 +453,9 @@ with tab1:
                             error=str(e),
                         )
                         st.error(f"Erro ao aprovar usuário: {str(e)}")
+
+                    if _approved_ok:
+                        st.rerun()
 
                 st.markdown('<hr class="ops-divider" />', unsafe_allow_html=True)
 
@@ -558,26 +574,37 @@ with tab2:
                     key=f"revoke_{user.get('email')}",
                     use_container_width=True,
                 ):
+                    _revoked_ok = False
                     try:
                         _log_page(
                             logging.INFO,
                             "manage_users.user_revoke.requested",
                             target_email=_mask_email(user.get("email", "")),
                         )
-                        client.table("authorized_users").update({
+                        result = client.table("authorized_users").update({
                             "approved": False,
                             "approved_by": None,
                             "approved_at": None,
                         }).eq("email", user.get("email")).execute()
 
-                        _log_page(
-                            logging.INFO,
-                            "manage_users.user_revoke.success",
-                            target_email=_mask_email(user.get("email", "")),
-                        )
-
-                        st.warning(f"🔒 Acesso revogado para {user.get('email')}")
-                        st.rerun()
+                        if not result.data:
+                            _log_page(
+                                logging.WARNING,
+                                "manage_users.user_revoke.no_rows_updated",
+                                target_email=_mask_email(user.get("email", "")),
+                            )
+                            st.error(
+                                "❌ Nenhuma linha atualizada. Verifique se o seu usuário "
+                                "tem permissão de revogação no banco de dados."
+                            )
+                        else:
+                            _log_page(
+                                logging.INFO,
+                                "manage_users.user_revoke.success",
+                                target_email=_mask_email(user.get("email", "")),
+                            )
+                            st.warning(f"🔒 Acesso revogado para {user.get('email')}")
+                            _revoked_ok = True
 
                     except Exception as e:
                         LOGGER.exception("Erro ao revogar usuário")
@@ -588,6 +615,9 @@ with tab2:
                             error=str(e),
                         )
                         st.error(f"Erro ao revogar acesso: {str(e)}")
+
+                    if _revoked_ok:
+                        st.rerun()
 
                 st.markdown('<hr class="ops-divider" />', unsafe_allow_html=True)
 
@@ -779,5 +809,6 @@ st.markdown("""
 <div style='text-align: center; color: #888; font-size: 12px;'>
     <p>Você está autenticado como <strong>{email}</strong></p>
     <p>Apenas usuários aprovados podem acessar esta página.</p>
+    <p>Versão {version}</p>
 </div>
-""".format(email=current_user.email), unsafe_allow_html=True)
+""".format(email=current_user.email, version=APP_VERSION), unsafe_allow_html=True)

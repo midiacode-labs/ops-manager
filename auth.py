@@ -80,11 +80,29 @@ def _log_auth(level: int, event: str, **fields: Any) -> None:
 def get_supabase_client() -> Client:
     """Retorna uma instância do cliente Supabase"""
     _log_auth(logging.DEBUG, "get_supabase_client")
-    return create_client(
+    client = create_client(
         SUPABASE_URL,
         SUPABASE_KEY,
         options=ClientOptions(storage=StreamlitSessionStorage()),
     )
+    # create_client() tenta recuperar a sessão do storage para definir o JWT
+    # nos headers do PostgREST. Se essa recuperação falhar silenciosamente
+    # (ex.: token expirado sem refresh bem-sucedido), o cliente cai de volta
+    # para a anon key, e operações restritas por RLS (como UPDATE) retornam
+    # 0 linhas sem lançar exceção. O fallback abaixo garante que o JWT seja
+    # definido a partir da sessão já validada em st.session_state.
+    anon_auth_header = f"Bearer {SUPABASE_KEY}"
+    if client.options.headers.get("Authorization") == anon_auth_header:
+        session = st.session_state.get("session")
+        if session:
+            access_token = getattr(session, "access_token", None)
+            if access_token:
+                _log_auth(
+                    logging.WARNING,
+                    "get_supabase_client.session_recovery_fallback",
+                )
+                client.options.headers["Authorization"] = f"Bearer {access_token}"
+    return client
 
 
 class StreamlitSessionStorage:
@@ -370,6 +388,11 @@ def _hydrate_auth_tokens_from_local_storage() -> None:
 
 def _capture_auth_tokens_from_query() -> None:
     """Captura tokens de auth vindos da URL e persiste temporariamente na sessão."""
+    # Se já autenticado, a sessão já está ativa — não roda novamente para
+    # evitar forçar um rerun que descartaria o estado de botões Streamlit.
+    if st.session_state.get("authenticated"):
+        return
+
     query_params = st.query_params
     access_token = _normalize_query_param(query_params.get(AUTH_QUERY_ACCESS_TOKEN_KEY))
     refresh_token = _normalize_query_param(query_params.get(AUTH_QUERY_REFRESH_TOKEN_KEY))
@@ -1356,20 +1379,24 @@ def display_auth_ui():
     """
     _log_auth(logging.DEBUG, "display_auth_ui.start")
     initialize_auth_session()
-    _hydrate_recovery_tokens_from_hash()
-    _capture_recovery_tokens_from_query()
-    _capture_auth_tokens_from_query()
-    _restore_session_from_local_storage_tokens()
-    _hydrate_auth_tokens_from_local_storage()
+    session_valid = check_session()
 
-    requested_mode = st.query_params.get("auth_mode")
-    if isinstance(requested_mode, list):
-        requested_mode = requested_mode[-1] if requested_mode else None
-    if requested_mode in {"signin", "signup", "reset"}:
-        st.session_state.auth_mode = requested_mode
-        if "auth_mode" in st.query_params:
-            del st.query_params["auth_mode"]
-        st.rerun()
+    if not session_valid:
+        _hydrate_recovery_tokens_from_hash()
+        _capture_recovery_tokens_from_query()
+        _capture_auth_tokens_from_query()
+        _restore_session_from_local_storage_tokens()
+        _hydrate_auth_tokens_from_local_storage()
+        session_valid = check_session()
+
+        requested_mode = st.query_params.get("auth_mode")
+        if isinstance(requested_mode, list):
+            requested_mode = requested_mode[-1] if requested_mode else None
+        if requested_mode in {"signin", "signup", "reset"}:
+            st.session_state.auth_mode = requested_mode
+            if "auth_mode" in st.query_params:
+                del st.query_params["auth_mode"]
+            st.rerun()
 
     def _render_feedback() -> None:
         feedback = st.session_state.get("auth_feedback")
@@ -1387,7 +1414,7 @@ def display_auth_ui():
             st.info(message)
 
     # Verificar sessão existente
-    if not check_session():
+    if not session_valid:
         _log_auth(logging.INFO, "display_auth_ui.not_authenticated")
         apply_login_theme()
 

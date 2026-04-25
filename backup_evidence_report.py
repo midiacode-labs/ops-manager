@@ -602,6 +602,286 @@ class AwsBackupEvidenceCollector:
             command.extend(["--profile", self.profile])
         return command
 
+    @staticmethod
+    def _parse_dynamodb_table_name(resource_arn: str) -> str | None:
+        marker = ":table/"
+        if marker not in resource_arn:
+            return None
+
+        suffix = resource_arn.split(marker, maxsplit=1)[1]
+        if not suffix:
+            return None
+
+        return suffix.split("/", maxsplit=1)[0] or None
+
+    def _build_dynamodb_command(self, args: list[str]) -> list[str]:
+        command = [
+            "aws",
+            "dynamodb",
+            *args,
+            "--region",
+            self.region,
+            "--output",
+            "json",
+        ]
+        if self.profile:
+            command.extend(["--profile", self.profile])
+        return command
+
+    def _collect_dynamodb_backup_evidence(self, resource_arn: str) -> dict[str, Any]:
+        table_name = self._parse_dynamodb_table_name(resource_arn)
+        if not table_name:
+            return {
+                "status": "unavailable",
+                "error": {
+                    "type": "invalid_dynamodb_table_arn",
+                    "message": "Não foi possível extrair o nome da tabela no ARN DynamoDB.",
+                },
+                "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
+            }
+
+        describe_table_command = self._build_dynamodb_command(
+            ["describe-table", "--table-name", table_name]
+        )
+        describe_continuous_command = self._build_dynamodb_command(
+            ["describe-continuous-backups", "--table-name", table_name]
+        )
+        list_backups_command = self._build_dynamodb_command(
+            ["list-backups", "--table-name", table_name]
+        )
+
+        table_description: dict[str, Any] = {}
+        continuous_backup_description: dict[str, Any] = {}
+        native_backup_summary: dict[str, Any] = {
+            "backups_found": 0,
+            "latest_backup": None,
+            "sample_backups": [],
+        }
+        collection_errors: list[dict[str, Any]] = []
+
+        describe_table_result = self._run_aws_cli(describe_table_command)
+        if describe_table_result is None:
+            collection_errors.append(
+                {
+                    "stage": "describe_table",
+                    "type": "aws_cli_not_found",
+                    "message": "AWS CLI não encontrada para consulta da tabela DynamoDB.",
+                }
+            )
+        elif describe_table_result.returncode != 0:
+            collection_errors.append(
+                {
+                    "stage": "describe_table",
+                    "type": "describe_table_error",
+                    "message": "Falha ao consultar metadados da tabela DynamoDB.",
+                    "stderr": describe_table_result.stderr.strip(),
+                    "stdout": describe_table_result.stdout.strip(),
+                }
+            )
+        else:
+            try:
+                table_payload = json.loads(describe_table_result.stdout or "{}")
+                table_info = table_payload.get("Table") or {}
+                billing_mode = (table_info.get("BillingModeSummary") or {}).get("BillingMode")
+                sse_info = table_info.get("SSEDescription") or {}
+
+                table_description = {
+                    "table_name": table_info.get("TableName"),
+                    "table_arn": table_info.get("TableArn"),
+                    "table_status": table_info.get("TableStatus"),
+                    "creation_date_time": table_info.get("CreationDateTime"),
+                    "item_count": table_info.get("ItemCount"),
+                    "table_size_bytes": table_info.get("TableSizeBytes"),
+                    "billing_mode": billing_mode or "PROVISIONED",
+                    "sse_status": sse_info.get("Status"),
+                    "sse_type": sse_info.get("SSEType"),
+                }
+            except json.JSONDecodeError:
+                collection_errors.append(
+                    {
+                        "stage": "describe_table",
+                        "type": "describe_table_invalid_json",
+                        "message": "Resposta inválida na consulta da tabela DynamoDB.",
+                    }
+                )
+
+        describe_continuous_result = self._run_aws_cli(describe_continuous_command)
+        if describe_continuous_result is None:
+            collection_errors.append(
+                {
+                    "stage": "describe_continuous_backups",
+                    "type": "aws_cli_not_found",
+                    "message": "AWS CLI não encontrada para consulta de backup contínuo.",
+                }
+            )
+        elif describe_continuous_result.returncode != 0:
+            collection_errors.append(
+                {
+                    "stage": "describe_continuous_backups",
+                    "type": "describe_continuous_backups_error",
+                    "message": "Falha ao consultar estado de backup contínuo no DynamoDB.",
+                    "stderr": describe_continuous_result.stderr.strip(),
+                    "stdout": describe_continuous_result.stdout.strip(),
+                }
+            )
+        else:
+            try:
+                continuous_payload = json.loads(describe_continuous_result.stdout or "{}")
+                continuous_info = continuous_payload.get("ContinuousBackupsDescription") or {}
+                pitr_info = continuous_info.get("PointInTimeRecoveryDescription") or {}
+
+                continuous_backup_description = {
+                    "continuous_backups_status": continuous_info.get(
+                        "ContinuousBackupsStatus"
+                    ),
+                    "point_in_time_recovery_status": pitr_info.get(
+                        "PointInTimeRecoveryStatus"
+                    ),
+                    "earliest_restorable_datetime": pitr_info.get(
+                        "EarliestRestorableDateTime"
+                    ),
+                    "latest_restorable_datetime": pitr_info.get(
+                        "LatestRestorableDateTime"
+                    ),
+                }
+            except json.JSONDecodeError:
+                collection_errors.append(
+                    {
+                        "stage": "describe_continuous_backups",
+                        "type": "describe_continuous_backups_invalid_json",
+                        "message": "Resposta inválida na consulta de backups contínuos.",
+                    }
+                )
+
+        list_backups_result = self._run_aws_cli(list_backups_command)
+        if list_backups_result is None:
+            collection_errors.append(
+                {
+                    "stage": "list_backups",
+                    "type": "aws_cli_not_found",
+                    "message": "AWS CLI não encontrada para listagem de backups nativos.",
+                }
+            )
+        elif list_backups_result.returncode != 0:
+            collection_errors.append(
+                {
+                    "stage": "list_backups",
+                    "type": "list_backups_error",
+                    "message": "Falha ao listar backups nativos da tabela DynamoDB.",
+                    "stderr": list_backups_result.stderr.strip(),
+                    "stdout": list_backups_result.stdout.strip(),
+                }
+            )
+        else:
+            try:
+                backups_payload = json.loads(list_backups_result.stdout or "{}")
+                backup_summaries = backups_payload.get("BackupSummaries") or []
+                if not isinstance(backup_summaries, list):
+                    backup_summaries = []
+
+                sorted_backups = sorted(
+                    backup_summaries,
+                    key=lambda item: self._parse_iso_date(item.get("BackupCreationDateTime"))
+                    or datetime.min.replace(tzinfo=timezone.utc),
+                    reverse=True,
+                )
+                latest_native = sorted_backups[0] if sorted_backups else None
+
+                native_backup_summary = {
+                    "backups_found": len(sorted_backups),
+                    "latest_backup": {
+                        "source": "dynamodb_native",
+                        "backup_arn_or_recovery_point_arn": (
+                            latest_native.get("BackupArn") if latest_native else None
+                        ),
+                        "backup_name": latest_native.get("BackupName") if latest_native else None,
+                        "status": latest_native.get("BackupStatus") if latest_native else None,
+                        "backup_type": latest_native.get("BackupType") if latest_native else None,
+                        "creation_date": (
+                            latest_native.get("BackupCreationDateTime")
+                            if latest_native
+                            else None
+                        ),
+                    },
+                    "sample_backups": sorted_backups[: self.max_recovery_points],
+                }
+            except json.JSONDecodeError:
+                collection_errors.append(
+                    {
+                        "stage": "list_backups",
+                        "type": "list_backups_invalid_json",
+                        "message": "Resposta inválida na listagem de backups nativos.",
+                    }
+                )
+
+        has_data = bool(table_description or continuous_backup_description)
+        has_native_backups = bool(native_backup_summary.get("backups_found"))
+
+        return {
+            "status": "collected" if (has_data or has_native_backups) else "unavailable",
+            "table_name": table_name,
+            "table_description": table_description,
+            "continuous_backup_description": continuous_backup_description,
+            "native_backup_summary": native_backup_summary,
+            "collection_errors": collection_errors,
+            "commands": {
+                "describe_table": " ".join(describe_table_command),
+                "describe_continuous_backups": " ".join(describe_continuous_command),
+                "list_backups": " ".join(list_backups_command),
+            },
+            "collected_at": self._to_iso_utc(datetime.now(timezone.utc)),
+        }
+
+    def _select_best_dynamodb_backup(
+        self,
+        latest_aws_backup: dict[str, Any] | None,
+        latest_native_backup: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        aws_candidate = None
+        if latest_aws_backup:
+            aws_candidate = {
+                "source": "aws_backup",
+                "backup_arn_or_recovery_point_arn": latest_aws_backup.get(
+                    "recovery_point_arn"
+                ),
+                "status": latest_aws_backup.get("status"),
+                "creation_date": latest_aws_backup.get("creation_date"),
+                "backup_type": latest_aws_backup.get("resource_type")
+                or "AWS_BACKUP_RECOVERY_POINT",
+                "backup_vault_name": latest_aws_backup.get("backup_vault_name"),
+            }
+
+        native_candidate = None
+        if latest_native_backup:
+            native_candidate = {
+                "source": "dynamodb_native",
+                "backup_arn_or_recovery_point_arn": latest_native_backup.get(
+                    "backup_arn_or_recovery_point_arn"
+                ),
+                "status": latest_native_backup.get("status"),
+                "creation_date": latest_native_backup.get("creation_date"),
+                "backup_type": latest_native_backup.get("backup_type") or "DYNAMODB_NATIVE",
+                "backup_name": latest_native_backup.get("backup_name"),
+            }
+
+        if aws_candidate and not native_candidate:
+            return aws_candidate
+        if native_candidate and not aws_candidate:
+            return native_candidate
+        if not aws_candidate and not native_candidate:
+            return None
+
+        aws_dt = self._parse_iso_date(aws_candidate.get("creation_date"))
+        native_dt = self._parse_iso_date(native_candidate.get("creation_date"))
+        if aws_dt and native_dt:
+            return aws_candidate if aws_dt >= native_dt else native_candidate
+        if aws_dt:
+            return aws_candidate
+        if native_dt:
+            return native_candidate
+
+        return aws_candidate
+
     def _collect_rds_snapshot_evidence(
         self,
         resource_arn: str,
@@ -1088,6 +1368,111 @@ class AwsBackupEvidenceCollector:
                 ),
             }
 
+        if resource.resource_type == "dynamodb":
+            collected_at = self._to_iso_utc(datetime.now(timezone.utc))
+            command = self._build_aws_command(resource.resource_arn)
+            process = self._run_aws_cli(command)
+
+            recovery_points: list[dict[str, Any]] = []
+            backup_error: dict[str, Any] | None = None
+
+            if process is None:
+                backup_error = {
+                    "type": "aws_cli_not_found",
+                    "message": "AWS CLI não encontrada. Instale e configure o comando `aws`.",
+                }
+            elif process.returncode != 0:
+                backup_error = {
+                    "type": "aws_backup_command_error",
+                    "message": "Falha ao consultar recovery points no AWS Backup.",
+                    "stderr": process.stderr.strip(),
+                    "stdout": process.stdout.strip(),
+                }
+            else:
+                try:
+                    payload = json.loads(process.stdout or "{}")
+                    recovery_points = payload.get("RecoveryPoints", [])
+                    if not isinstance(recovery_points, list):
+                        recovery_points = []
+                except json.JSONDecodeError:
+                    backup_error = {
+                        "type": "invalid_json_response",
+                        "message": "A resposta da AWS CLI não é um JSON válido.",
+                        "stderr": process.stderr.strip(),
+                        "stdout": process.stdout.strip(),
+                    }
+
+            dynamodb_evidence = self._collect_dynamodb_backup_evidence(resource.resource_arn)
+
+            latest_aws_backup = self._extract_latest_backup(recovery_points)
+            latest_native_backup = (
+                dynamodb_evidence.get("native_backup_summary", {}).get("latest_backup")
+                if isinstance(dynamodb_evidence, dict)
+                else None
+            )
+            latest_backup = self._select_best_dynamodb_backup(
+                latest_aws_backup,
+                latest_native_backup,
+            )
+
+            collection_errors = []
+            if backup_error:
+                collection_errors.append(backup_error)
+            if isinstance(dynamodb_evidence, dict):
+                collection_errors.extend(dynamodb_evidence.get("collection_errors") or [])
+
+            has_supporting_data = bool(
+                isinstance(dynamodb_evidence, dict)
+                and (
+                    dynamodb_evidence.get("table_description")
+                    or dynamodb_evidence.get("continuous_backup_description")
+                    or (dynamodb_evidence.get("native_backup_summary") or {}).get("backups_found")
+                )
+            )
+
+            if latest_backup:
+                status = "ok"
+            elif has_supporting_data:
+                status = "partial"
+            else:
+                status = "error"
+
+            result: dict[str, Any] = {
+                "resource_type": resource.resource_type,
+                "resource_arn": resource.resource_arn,
+                "collected_at": collected_at,
+                "command": " ".join(command),
+                "command_exit_code": process.returncode if process else None,
+                "status": status,
+                "backup_service": "aws_backup_dynamodb",
+                "collection_strategy": "aws_backup_plus_dynamodb_native",
+                "recovery_points_found": len(recovery_points),
+                "latest_backup": latest_backup,
+                "dynamodb_backup_evidence": {
+                    **dynamodb_evidence,
+                    "aws_backup_summary": {
+                        "recovery_points_found": len(recovery_points),
+                        "latest_backup": latest_aws_backup,
+                    },
+                    "collection_errors": collection_errors,
+                },
+                "note": (
+                    "Evidências coletadas via AWS Backup e APIs nativas do DynamoDB "
+                    "(tabela, backup contínuo e backups nativos)."
+                ),
+            }
+
+            if status == "error":
+                result["error"] = {
+                    "type": "dynamodb_collection_failed",
+                    "message": (
+                        "Não foi possível obter evidências de backup para a tabela DynamoDB."
+                    ),
+                    "details": collection_errors,
+                }
+
+            return result
+
         command = self._build_aws_command(resource.resource_arn)
         collected_at = self._to_iso_utc(datetime.now(timezone.utc))
 
@@ -1244,6 +1629,28 @@ def _build_default_resources() -> list[BackupResource]:
             )
         )
 
+    dynamodb_resource_arns_raw = os.getenv("DYNAMODB_RESOURCE_ARNS", "").strip()
+    if dynamodb_resource_arns_raw:
+        dynamodb_arns = [
+            value.strip()
+            for value in dynamodb_resource_arns_raw.split(",")
+            if value and value.strip()
+        ]
+    else:
+        dynamodb_arns = []
+
+    seen_dynamodb_arns: set[str] = set()
+    for dynamodb_arn in dynamodb_arns:
+        if dynamodb_arn in seen_dynamodb_arns:
+            continue
+        seen_dynamodb_arns.add(dynamodb_arn)
+        resources.append(
+            BackupResource(
+                resource_type="dynamodb",
+                resource_arn=dynamodb_arn,
+            )
+        )
+
     return resources
 
 
@@ -1303,7 +1710,8 @@ def main() -> None:
     if not resources:
         parser.error(
             "Nenhum recurso configurado. Defina OPENSEARCH_RESOURCE_ARN, "
-            "RDS_ACCOUNT_API_RESOURCE_ARN, RDS_CONTENTCORE_API_RESOURCE_ARN "
+            "RDS_ACCOUNT_API_RESOURCE_ARN, RDS_CONTENTCORE_API_RESOURCE_ARN, "
+            "DYNAMODB_RESOURCE_ARNS "
             "ou use --add-resource."
         )
 
